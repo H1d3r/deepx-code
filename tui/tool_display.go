@@ -30,7 +30,7 @@ var toolIcons = map[string]string{
 	"Memory":           "🧠",
 	"LoadSkill":        "📜",
 	"CreatePlan":       "📋",
-	"UpdateTaskStatus": "✅",
+	"UpdatePlanStatus": "✅",
 	"SwitchModel":      "🚀",
 }
 
@@ -187,7 +187,7 @@ func extractMainArg(name, argsJSON string) string {
 		return strVal(args["command"])
 	case "SwitchModel":
 		return strVal(args["reason"])
-	case "UpdateTaskStatus":
+	case "UpdatePlanStatus":
 		id, st := strVal(args["id"]), strVal(args["status"])
 		if id != "" && st != "" {
 			return id + " → " + st

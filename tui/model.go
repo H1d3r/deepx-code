@@ -69,7 +69,7 @@ type model struct {
 	attachedImagePaths []string
 
 	// 当前活跃规划。nil = 无规划。pro 调用 CreatePlan 时初始化,
-	// UpdateTaskStatus 通过 TaskStatusMsg 增量更新。每次新用户消息发起前清空。
+	// UpdatePlanStatus 通过 TaskStatusMsg 增量更新。每次新用户消息发起前清空。
 	plan *planState
 
 	// 鼠标 chat 矩形选区。selecting=true 表示左键在 chat 区按下后还没松开;
@@ -875,10 +875,10 @@ func (m *model) handleSlashCommand(input string) {
 	switch cmd {
 	case "/plan":
 		m.mode = agent.AgentMode_Plan
-		m.appendChat("System", "已切换到 plan 模式(仅只读工具:list_dir / read_file / grep_file / glob_file / file_tree)")
+		m.appendChat("System", "已切换到 plan 模式(仅只读工具:Read / List / Tree / Glob / Grep / Search / Fetch / Memory)")
 	case "/auto":
 		m.mode = agent.AgentMode_Auto
-		m.appendChat("System", "已切换到 auto 模式(全部工具可用,包含 write_file / edit_file / run_command)")
+		m.appendChat("System", "已切换到 auto 模式(全部工具可用,包含 Write / Update / Bash 等)")
 	case "/mode":
 		m.appendChat("System", fmt.Sprintf("当前模式: %s", m.mode))
 	case "/config":

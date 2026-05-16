@@ -292,7 +292,7 @@ func StartStream(
 			// 执行每个工具调用,把结果加进 convo。
 			// 三个工具被 deepx 拦截 (不走 Executor):
 			//   - CreatePlan         → 解析后产 PlanCreatedMsg,触发 DAG 调度
-			//   - UpdateTaskStatus   → 解析后产 TaskStatusMsg,UI 更新单项状态
+			//   - UpdatePlanStatus   → 解析后产 TaskStatusMsg,UI 更新单项状态
 			//   - SwitchModel        → 改本轮 currentEntry / role,通过 ModelSwitchMsg 通知 UI
 			// 拦截后仍要给 LLM 一个 fake tool result,让 OpenAI 工具循环能正常推进。
 			for _, tc := range toolCalls {
@@ -350,8 +350,8 @@ func StartStream(
 							Success: successCount > 0,
 						}
 					}
-				case "UpdateTaskStatus":
-					id, st, summary, perr := parseUpdateTaskStatusArgs(tc.Function.Arguments)
+				case "UpdatePlanStatus":
+					id, st, summary, perr := parseUpdatePlanStatusArgs(tc.Function.Arguments)
 					if perr != nil {
 						result = tools.ToolResult{Output: perr.Error(), Success: false}
 					} else {

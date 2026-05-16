@@ -28,7 +28,7 @@ func ReadFile(args map[string]any) ToolResult {
 		return ToolResult{Output: fmt.Sprintf("文件不存在: %v", err), Success: false}
 	}
 	if info.IsDir() {
-		return ToolResult{Output: "目标是目录,请使用 list_dir", Success: false}
+		return ToolResult{Output: "目标是目录,请使用 List 工具", Success: false}
 	}
 	if info.Size() > 10*1024*1024 {
 		return ToolResult{Output: "文件过大（>10MB）", Success: false}

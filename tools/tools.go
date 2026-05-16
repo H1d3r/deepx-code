@@ -17,7 +17,7 @@ type Tool struct {
 	Executor    func(args map[string]any) ToolResult `json:"-"`
 	ReadOnly    bool                                 `json:"-"`
 	// Roles 限制本工具可见的模型角色。空 = 任何角色可见。
-	// 例如 UpdateTaskStatus 只对 subagent 可见,主对话不需要。
+	// 例如 UpdatePlanStatus 只对 subagent 可见,主对话不需要。
 	Roles []string `json:"-"`
 }
 
@@ -372,7 +372,7 @@ var Tools = []Tool{
 			"plan4: 综合分析     (pro)    ← depends_on=[plan1,plan2,plan3]\n" +
 			"```\n" +
 			"无依赖时**不要写 depends_on**(允许 deepx 并发跑兄弟节点)。\n\n" +
-			"**执行 & 返回值**:deepx 自动为每个节点起子 agent,按 DAG 依赖关系并发执行。本工具返回所有节点的执行汇总(每行一个节点 + 状态 + 简短结果)。拿到汇总后只需给用户写一段简洁的最终总结 — **不要再做实际工作,也不要再调 UpdateTaskStatus**(状态由 deepx 自维护)。",
+			"**执行 & 返回值**:deepx 按 DAG 依赖关系并发执行所有节点,返回每个节点的执行汇总(每行一个节点 + 状态 + 简短结果)。拿到汇总后只需给用户写一段简洁的最终总结,不要再做实际工作(状态由 deepx 自维护)。",
 		Parameters: ToolParam{
 			Type: "object",
 			Properties: map[string]PropDef{
@@ -400,7 +400,7 @@ var Tools = []Tool{
 		// flash 起手时也允许它把复杂任务拆成 DAG(其中可指定 pro 节点跑深度部分)。
 	},
 	{
-		Name: "UpdateTaskStatus",
+		Name: "UpdatePlanStatus",
 		Description: "更新某个 plan 节点的执行状态。每开始一个 plan 前调用一次(status=running),完成或失败时再调一次(status=done/failed)。summary 是可选的一段简短结论。" +
 			"deepx 用这些状态实时驱动右栏 Current Plan 区的显示。",
 		Parameters: ToolParam{
@@ -412,7 +412,7 @@ var Tools = []Tool{
 			},
 			Required: []string{"id", "status"},
 		},
-		Executor: UpdateTaskStatus,
+		Executor: UpdatePlanStatus,
 		ReadOnly: true,
 		// 只对子 agent 暴露。主对话里的 pro 在调用 CreatePlan 后 DAG 自动驱动状态,
 		// 不需要 pro 显式更新;子 agent 偶尔需要写中间状态(实际被吞,以 scheduler 为准)。

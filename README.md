@@ -106,7 +106,7 @@ deepx 把 `os.Getwd()` 作 workspace,所有工具调用 / Memory 检索 / 项目
 | `Memory`                                   | 检索本 workspace 历史对话            | plan/auto |
 | `LoadSkill`                                | 按名加载用户预定义的 `SKILL.md` 正文 | plan/auto |
 | `SwitchModel`                             | LLM 主动升级到 pro 模型              | plan/auto |
-| `CreatePlan` / `UpdateTaskStatus`       | 模型拆 DAG + 自维护状态,deepx 调度   | —         |
+| `CreatePlan` / `UpdatePlanStatus`       | 模型拆 DAG + 自维护状态,deepx 调度   | —         |
 
 ## Skills 多来源发现
 

@@ -66,23 +66,23 @@ func parseCreatePlanArgs(rawArgs string) ([]PlanItem, error) {
 	return wrapper.Plans, nil
 }
 
-// parseUpdateTaskStatusArgs 把 UpdateTaskStatus 的参数解出来。
-func parseUpdateTaskStatusArgs(rawArgs string) (id string, status PlanStatus, summary string, err error) {
+// parseUpdatePlanStatusArgs 把 UpdatePlanStatus 的参数解出来。
+func parseUpdatePlanStatusArgs(rawArgs string) (id string, status PlanStatus, summary string, err error) {
 	var p struct {
 		ID      string `json:"id"`
 		Status  string `json:"status"`
 		Summary string `json:"summary"`
 	}
 	if rawArgs == "" || rawArgs == "null" {
-		err = fmt.Errorf("UpdateTaskStatus: 空参数")
+		err = fmt.Errorf("UpdatePlanStatus: 空参数")
 		return
 	}
 	if err = json.Unmarshal([]byte(rawArgs), &p); err != nil {
-		err = fmt.Errorf("UpdateTaskStatus: 解析失败: %w", err)
+		err = fmt.Errorf("UpdatePlanStatus: 解析失败: %w", err)
 		return
 	}
 	if p.ID == "" {
-		err = fmt.Errorf("UpdateTaskStatus: id 必填")
+		err = fmt.Errorf("UpdatePlanStatus: id 必填")
 		return
 	}
 	switch p.Status {
@@ -97,7 +97,7 @@ func parseUpdateTaskStatusArgs(rawArgs string) (id string, status PlanStatus, su
 	case "pending":
 		status = PlanStatusPending
 	default:
-		err = fmt.Errorf("UpdateTaskStatus: 未知 status %q (允许: pending/running/done/failed/blocked)", p.Status)
+		err = fmt.Errorf("UpdatePlanStatus: 未知 status %q (允许: pending/running/done/failed/blocked)", p.Status)
 		return
 	}
 	return p.ID, status, p.Summary, nil

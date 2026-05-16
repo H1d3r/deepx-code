@@ -37,7 +37,7 @@ const subAgentMaxRounds = 50
 // 行为:
 //   - 独立 history,只含 system prompt + 用户原始任务 + 节点 title
 //   - 工具白名单按 RoleSubAgent 过滤 (看不到 CreatePlan,避免递归 plan)
-//   - UpdateTaskStatus 调用被吞掉,scheduler 才是状态真实来源
+//   - UpdatePlanStatus 调用被吞掉,scheduler 才是状态真实来源
 //   - 不向 TUI 发 TokenMsg / ToolCallStartMsg 等可见事件,子 agent 中间过程完全隐藏
 //   - 最终 assistant content 作为 Summary 返回;失败 → Err
 func runSubAgent(in subAgentInput) subAgentResult {
@@ -113,7 +113,7 @@ func runSubAgent(in subAgentInput) subAgentResult {
 		for _, tc := range toolCalls {
 			var result tools.ToolResult
 			switch tc.Function.Name {
-			case "UpdateTaskStatus":
+			case "UpdatePlanStatus":
 				// 子 agent 想自报状态,吞掉给 OK。scheduler 才是状态来源。
 				result = tools.ToolResult{Output: "已记录", Success: true}
 			default:
