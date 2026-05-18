@@ -289,6 +289,8 @@ else
     append_rc "$HOME/.zshrc"
     append_rc "$HOME/.bashrc"
     append_rc "$HOME/.bash_profile"
+    # Linux 桌面环境(sddm/gdm/lightdm)通常走 .profile 而非 .bashrc
+    append_rc "$HOME/.profile"
 
     # fish:不同语法
     FISH_CFG="$HOME/.config/fish/config.fish"
@@ -301,6 +303,9 @@ else
         fi
     fi
 fi
+
+# 使当前 shell 立即可用(不等 source)
+export PATH="$BIN_DIR:$PATH"
 
 # ---------------------------------------------------------------------------
 # Step 7: 验证
@@ -321,11 +326,14 @@ echo ""
 echo -e "${BOLD}${GREEN}deepx 安装完成!${RESET}"
 echo ""
 echo "  下一步:"
-echo "    1. 重载 shell(或直接重开终端):"
-echo "         bash/zsh: source ~/.zshrc"
+echo "    现在就可以直接运行:"
+echo "         deepx"
+echo ""
+echo "    新终端也生效:"
+echo "         bash/zsh: source ~/.zshrc  (或关掉重开)"
 echo "         fish:     source ~/.config/fish/config.fish"
-echo "    2. 启动: deepx"
-echo "       首次启动会引导你配置 API key(写入 ~/.deepx/model.yaml)"
+echo ""
+echo "    首次启动会引导你配置 API key(写入 ~/.deepx/model.yaml)"
 echo ""
 echo "  卸载: rm -f ${BIN_DIR}/${BIN_NAME} && rm -rf ~/.deepx"
 echo ""
