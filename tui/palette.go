@@ -16,6 +16,7 @@ var slashCommands = []struct {
 }{
 	{"/plan", "切到只读模式"},
 	{"/auto", "切回全工具模式"},
+	{"/review", "切到审核模式"},
 	{"/mode", "显示当前模式"},
 	{"/config", "重新配置 API key"},
 	{"/skills", "列出可用 skill"},

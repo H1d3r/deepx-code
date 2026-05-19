@@ -205,7 +205,7 @@ func initialModel(models agent.ModelConfig, needsSetup bool) model {
 		models:          models,
 		activeModelRole: role,
 		activeModelID:   activeID,
-		mode:            agent.AgentMode_Auto,
+		mode:            agent.AgentMode_Review,
 		status:          "idle",
 		spinner:         sp,
 		workspace:       wd,
@@ -264,7 +264,7 @@ func initialModel(models agent.ModelConfig, needsSetup bool) model {
 					strconv.Itoa(len(entries)) + " 条)_\n\n")
 			}
 		}
-		// 声明当前模式,通知 LLM 当前状态。模式始终从 auto 起步。
+		// 声明当前模式,通知 LLM 当前状态。模式始终从 review 起步。
 		msg := modeNotification(m.mode, m.activeModelRole)
 		m.history = append(m.history, agent.ChatMessage{Role: "assistant", Content: msg})
 		m.appendChat("assistant", msg)
@@ -657,10 +657,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			// 斜杠命令(本地处理,不发送给 LLM)
-			if strings.HasPrefix(input, "/") {
+			// 斜杠命令:仅匹配已知命令,粘贴的路径类文本不误触
+			if matches := filterSlashCommands(input); len(matches) > 0 {
 				m.input.SetValue("")
-				m.handleSlashCommand(input)
+				m.handleSlashCommand(matches[0].name)
 				return m, nil
 			}
 
