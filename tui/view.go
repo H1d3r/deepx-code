@@ -415,10 +415,10 @@ func (m model) rightPanelView() string {
 			" " + formatElapsed(elapsed),
 	})...)
 	rows = append(rows, section("Commands", []string{
-		label("/plan ") + " read-only",
-		label("/auto ") + " all tools",
-		label("/review ") + " review mode",
-		label("/help ") + " help",
+		label("/plan   ") + "Write/Bash off",
+		label("/auto   ") + "Write/Bash on",
+		label("/review ") + "Write/Bash ask",
+		label("/help   ") + "all cmds",
 	})...)
 
 	// 完整 plan 树在 chat 区显示,右栏只放进度摘要(X/Y done + 当前运行节点)。
