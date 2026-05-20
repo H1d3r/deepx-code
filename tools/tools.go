@@ -380,13 +380,6 @@ var Tools = []Tool{
 			"  • `flash` — 机械步骤:读文件 / grep / ls / git status / 统计行数\n" +
 			"  • `pro` — 思考步骤:分析 / 代码评审 / 根因排查 / 最终汇总\n\n" +
 			"**并发原则**: 默认不写 depends_on，只有某步骤确实必须等另一步完成才加。优先并发，而非串行。\n\n" +
-			"**典型模式**:\n" +
-			"```\n" +
-			"plan1: 读文件 A  (flash)  ┐\n" +
-			"plan2: 读文件 B  (flash)  ├─ 并发\n" +
-			"plan3: 读文件 C  (flash)  ┘\n" +
-			"plan4: 综合分析  (pro)    ← depends_on=[plan1,plan2,plan3]\n" +
-			"```\n" +
 			"无依赖时**不要写 depends_on**(允许并发执行节点)。\n\n" +
 			"**执行 & 返回值**: 按 DAG 依赖关系并发执行所有节点,返回每个节点的执行汇总(每行一个节点 + 状态 + 简短结果)。拿到汇总后只需给用户写一段简洁的最终总结,不要再做实际工作(状态由 deepx 自维护)。",
 		Parameters: ToolParam{
