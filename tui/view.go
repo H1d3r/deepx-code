@@ -155,7 +155,20 @@ func (m model) View() tea.View {
 	if m.showLangModal {
 		mainUI = overlayCentered(mainUI, m.langModalBlock(), m.width, m.height)
 	}
-	return m.wrapView(normalizeFrame(mainUI, m.width, m.height))
+	v := m.wrapView(normalizeFrame(mainUI, m.width, m.height))
+	// 真实终端光标定位到 input 内的 cursor 位置。
+	// textarea.Cursor() 给的 X/Y 是相对 textarea 自身的局部坐标;input 起始 Y =
+	// body 占的行数 + 1(上方空白行),X 不偏移(textarea 占满 m.width,从左边起)。
+	// modal 打开时不显示真实光标 —— 避免光标卡在 modal 背后。
+	// cursorBlinkOff 由 cursorBlinkTickMsg 600ms 切一次:亮时塞 Cursor,灭时不塞 —
+	// 不依赖终端的 DECSCUSR blink 支持,VS Code 终端等也能闪。
+	if !m.showSetup && !m.showLangModal && !m.reviewPending && !m.cursorBlinkOff {
+		if c := m.input.Cursor(); c != nil {
+			c.Position.Y += bodyH + 1
+			v.Cursor = c
+		}
+	}
+	return v
 }
 
 // normalizeFrame 把整帧锁到精确 width × height:

@@ -89,6 +89,13 @@ type model struct {
 	// Ctrl+A → 维持。
 	inputAllSelected bool
 
+	// app 侧光标 blink 状态。textarea 现在用真实终端光标(SetVirtualCursor(false)),
+	// 终端光标 blink 走 DECSCUSR 指令但部分终端(如 VS Code 集成终端)不响应,
+	// 所以这里 600ms tick 自己切换 cursor 可见性 —— View 看到 cursorBlinkOff=true 时
+	// 不往 tea.View.Cursor 塞值,bubbletea 就把光标藏起来,下一拍切回来。
+	// 用户按键时由 Update 重置成"亮"并 reset 计时,保持手感跟旧虚拟光标一致。
+	cursorBlinkOff bool
+
 	// 命令 palette 选中索引。是否打开不存字段 — 由 filterSlashCommands(input value)
 	// 实时计算,避免状态同步问题。idx 越界时(value 一变 matches 变短)由消费方 clamp。
 	commandPaletteIdx int
@@ -172,6 +179,7 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string) mod
 
 	sp := spinner.New()
 	sp.Spinner = spinner.MiniDot
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("99"))
 
 	ti := textarea.New()
 	ti.Placeholder = T("misc.input_placeholder")
@@ -197,6 +205,12 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string) mod
 	tas.Cursor.Blink = true
 	tas.Cursor.BlinkSpeed = 600 * time.Millisecond
 	ti.SetStyles(tas)
+	// 关掉 textarea 的虚拟光标 —— 虚拟光标把光标渲染成"反色的格子上字符"塞进
+	// View 字符串里,跟正文字符一起进 bubbletea cellbuf 做帧差。CJK 宽字符 +
+	// placeholder→content 跨帧 diff 时,这个反色 cell 会让首字符的格子算错位置,
+	// 表现为首字符不显示。改用真实终端光标(由 tui/view.go wrapView 里 v.Cursor 注入),
+	// 真实光标只是终端的位置 + 形状指令,完全不参与正文字符渲染。
+	ti.SetVirtualCursor(false)
 	// 只在第 0 行画 "> ",其它行用 2 空格保持光标列对齐 — promptWidth 必须 = 2 才能让
 	// textarea 内部把光标列正确算到 prompt 之后。
 	ti.SetPromptFunc(2, func(info textarea.PromptInfo) string {
@@ -368,10 +382,24 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string) mod
 	return m
 }
 
+// cursorBlinkTickMsg 是 app 侧 600ms 一次的 cursor blink 信号。
+// 每次到达时 Update 切 cursorBlinkOff,然后返回下一拍 tick。
+type cursorBlinkTickMsg struct{}
+
+// cursorBlinkInterval = 半周期。亮 600ms,灭 600ms,跟旧虚拟光标的节奏对齐。
+const cursorBlinkInterval = 600 * time.Millisecond
+
+func cursorBlinkTick() tea.Cmd {
+	return tea.Tick(cursorBlinkInterval, func(time.Time) tea.Msg {
+		return cursorBlinkTickMsg{}
+	})
+}
+
 func (m model) Init() tea.Cmd {
 	// textarea 的光标 blink 由 Focus() 返回,启动时一并发起。
 	// checkForUpdateCmd 异步打 GitHub Releases API,完成后通过 updateCheckResult 回送 Update。
-	return tea.Batch(textinput.Blink, m.input.Focus(), checkForUpdateCmd())
+	// cursorBlinkTick 自己驱动真实光标的明灭节奏。
+	return tea.Batch(textinput.Blink, m.input.Focus(), checkForUpdateCmd(), cursorBlinkTick())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -970,6 +998,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, tea.Batch(cmds...)
 
+	case cursorBlinkTickMsg:
+		// app 侧 cursor blink:每 600ms 切一次可见,View 那边读 cursorBlinkOff
+		// 决定要不要把光标塞进 tea.View.Cursor。继续返回下一拍 tick,自驱动。
+		m.cursorBlinkOff = !m.cursorBlinkOff
+		return m, cursorBlinkTick()
+
 	case agent.HistoryUpdateMsg:
 		if m.streamCh == nil {
 			return m, nil
@@ -1130,6 +1164,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var inputCmd tea.Cmd
 	m.input, inputCmd = m.input.Update(msg)
 	cmds = append(cmds, inputCmd)
+
+	// 用户敲键时强制 cursor 立刻亮,跟旧虚拟光标"打字 = 光标snappy显形"的手感一致。
+	// 下一拍 600ms tick 仍按既有节奏 toggle,不 reset 时钟。
+	if _, ok := msg.(tea.KeyPressMsg); ok {
+		m.cursorBlinkOff = false
+	}
 
 	return m, tea.Batch(cmds...)
 }
@@ -1568,10 +1608,12 @@ func (m *model) renderChatBaseContent(w int) string {
 	// kind == kindTools 时跳过 glamour:tools 段是结构化的工具调用列表(每行一条),
 	// 走 markdown 会把多 tool 行的单 \n 当 soft break 拼成一行 — 不是想要的。
 	// 直接保留 raw \n + emoji spacing,再加缩进色条即可。
+	// Update 工具的 ~~~diff ... ~~~ 块单独走 colorizeDiffBlock 染色,fence 行不显示,
+	// `-` 行染红、`+` 行染绿、"... (N more lines)" 染暗 —— 跟 markdown diff 渲染观感一致。
 	content := m.chatContent.Render(w, func(raw, kind string, width int) string {
 		var inner string
 		if kind == kindTools {
-			inner = ensureEmojiSpacingANSI(ensureEmojiSpacing(raw))
+			inner = colorizeDiffBlock(ensureEmojiSpacingANSI(ensureEmojiSpacing(raw)))
 		} else {
 			inner = ensureEmojiSpacingANSI(m.renderMarkdown(ensureEmojiSpacing(raw), barInnerWidth(width, kind)))
 		}

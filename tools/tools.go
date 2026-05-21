@@ -134,27 +134,21 @@ var Tools = []Tool{
 	},
 	{
 		Name: "Update",
-		Description: "编辑已有文件。支持两种模式:\n\n" +
-			"**模式 1 — 行号替换（推荐）**: 用 start_line/end_line 指定要替换的行范围,new_string 为替换内容。\n" +
-			"行号与 Read 工具输出一致(1-indexed),end_line 默认等于 start_line。\n" +
-			"这是最可靠的方式,不依赖精确字符串复制。优先使用此模式。\n\n" +
-			"**模式 2 — 字符串替换**: 用 old_string 精确匹配要替换的文本。\n" +
+		Description: "编辑已有文件:用 old_string 精确匹配要替换的内容,new_string 为替换后的内容。\n\n" +
 			"old_string 必须与文件内容逐字符一致(含缩进 Tab/空格、空行)。\n" +
 			"从 Read 输出复制 old_string 时,只复制「│」之后的内容,不包含行号前缀。\n" +
-			"选取 3-5 行上下文确保唯一性。若 old_string 出现多次且只想替换一处,加更多上下文让其唯一。\n" +
+			"选取 3-5 行上下文确保唯一性。若 old_string 出现多次且只想替换一处,加更多上下文让其唯一;\n" +
 			"replace_all=true 可替换全部出现。\n\n" +
 			"注意: old_string/new_string 中若有双引号必须转义为 \\\"。",
 		Parameters: ToolParam{
 			Type: "object",
 			Properties: map[string]PropDef{
 				"path":        {Type: "string", Description: "文件路径（绝对或相对路径）"},
-				"old_string":  {Type: "string", Description: "[字符串模式] 要替换的精确文本,需逐字符匹配"},
-				"new_string":  {Type: "string", Description: "替换后的文本（两种模式都需要）"},
-				"start_line":  {Type: "integer", Description: "[行号模式] 起始行号,与 Read 输出一致(1-indexed)"},
-				"end_line":    {Type: "integer", Description: "[行号模式] 结束行号(含),默认等于 start_line"},
-				"replace_all": {Type: "boolean", Description: "[字符串模式] 替换所有匹配项,默认 false"},
+				"old_string":  {Type: "string", Description: "要替换的精确文本,需逐字符匹配"},
+				"new_string":  {Type: "string", Description: "替换后的文本"},
+				"replace_all": {Type: "boolean", Description: "替换所有匹配项,默认 false"},
 			},
-			Required: []string{"path", "new_string"},
+			Required: []string{"path", "old_string", "new_string"},
 		},
 		Executor: EditFile,
 		ReadOnly: false,

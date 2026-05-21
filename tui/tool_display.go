@@ -2,7 +2,10 @@ package tui
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
+
+	"charm.land/lipgloss/v2"
 )
 
 // toolIcons 给每个工具一个 emoji 图标,统一 2 cell 显示宽。
@@ -95,15 +98,39 @@ func formatUpdatePreview(icon, argsJSON string) string {
 	if oldS == "" && newS == "" {
 		return header
 	}
+	// 字符串模式没有显式行号,grep 文件定位 old_string 的起始行,这样 -/+ 行前面
+	// 也能渲染行号列。ToolCallStartMsg 在 Executor 之前 fire,文件还是 pre-edit 状态,
+	// 此时 old_string 仍能在文件里精确匹配到。读不到 / 没匹配 → startLine=0,退化成无行号。
+	startLine := 0
+	if oldS != "" {
+		startLine = locateLineInFile(strVal(args["path"]), oldS)
+	}
+
 	var sb strings.Builder
 	sb.WriteString(header)
-	// 空行 + ~~~diff:markdown 块边界,renderMarkdown 识别 infostring "diff" 后
-	// 把 `-` 行染红、`+` 行染绿、`@@` hunk 头染 cyan(见 model.go 的 colorizeDiffLine)。
 	sb.WriteString("\n\n~~~diff\n")
-	writeDiffBlock(&sb, oldS, "- ")
-	writeDiffBlock(&sb, newS, "+ ")
+	writeDiffBlock(&sb, oldS, "-", startLine)
+	writeDiffBlock(&sb, newS, "+", startLine)
 	sb.WriteString("~~~")
 	return sb.String()
+}
+
+// locateLineInFile 读 path,在文件内容里精确定位 needle,返回它的首行行号(1-indexed)。
+// 读不到 / 没匹配返回 0。多次匹配时取第一个 —— 跟 EditFile 字符串模式"必须唯一"约束一致。
+// 用于字符串模式的 patch 预览:有了行号就能在 -/+ 前面渲染行号列。
+func locateLineInFile(path, needle string) int {
+	if path == "" || needle == "" {
+		return 0
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	idx := strings.Index(string(data), needle)
+	if idx < 0 {
+		return 0
+	}
+	return strings.Count(string(data[:idx]), "\n") + 1
 }
 
 const (
@@ -111,11 +138,64 @@ const (
 	updatePreviewMaxWidth = 100
 )
 
-// writeDiffBlock 把单段文本(old_string 或 new_string)按行拆分,每行加 prefix 后写入 sb。
+// colorizeDiffBlock 扫描 tools 段文本,找出 ~~~diff ... ~~~ 块,把里面的 `-` 行染红、
+// `+` 行染绿、"... (N more lines)" 行染暗,fence 行(```/~~~)整行删掉避免污染视觉。
+// 块外的内容(工具调用首行、其他工具的 raw 一行式)原样保留。
+// 没遇到 fence 时整段原样返回,常规工具调用不受影响。
+func colorizeDiffBlock(s string) string {
+	if !strings.Contains(s, "~~~") && !strings.Contains(s, "```") {
+		return s
+	}
+	addStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render  // green
+	delStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render  // red
+	hintStyle := lipgloss.NewStyle().Foreground(dimColor).Render
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	inDiff := false
+	for _, l := range lines {
+		trim := strings.TrimSpace(l)
+		// fence open / close —— diff 块用 ~~~diff 开 ~~~ 闭,常规 ``` 也兼容。
+		if strings.HasPrefix(trim, "~~~") || strings.HasPrefix(trim, "```") {
+			if inDiff {
+				inDiff = false
+			} else if strings.Contains(trim, "diff") {
+				inDiff = true
+			}
+			continue // fence 不显示
+		}
+		if !inDiff {
+			out = append(out, l)
+			continue
+		}
+		// 在 diff 块内 —— 行可能是:
+		//   "<sign> <content>"           (无行号 / 字符串模式拿不到)
+		//   "  42 <sign> <content>"      (有行号,左侧 padding 对齐)
+		//   "... (N more lines)"         (截断提示)
+		// 检测 sign 时跳过前导空白和数字。
+		sign := diffSignByte(l)
+		switch sign {
+		case '+':
+			out = append(out, addStyle(l))
+		case '-':
+			out = append(out, delStyle(l))
+		case 0:
+			if strings.HasPrefix(strings.TrimLeft(l, " "), "... (") {
+				out = append(out, hintStyle(l))
+			} else {
+				out = append(out, l)
+			}
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// writeDiffBlock 把单段文本(old_string 或 new_string)按行拆分,每行格式化成
+// "<lineNo> <sign> <content>",sign 是 "-" / "+",lineNo 从 startLine 起 1 行 1。
+// startLine == 0 表示没有行号信息,这时省略行号列、退化成 "<sign> <content>"。
 // 超过 updatePreviewMaxLines 行只保留头部 N 行,末尾追加 "... (M more lines)";
 // 单行长度超过 updatePreviewMaxWidth 字节时尾部截断为 "..."。
-// 空串直接返回(调用方已在 oldS && newS 全空时短路)。
-func writeDiffBlock(sb *strings.Builder, s, prefix string) {
+// 空串直接返回。
+func writeDiffBlock(sb *strings.Builder, s, sign string, startLine int) {
 	if s == "" {
 		return
 	}
@@ -124,19 +204,78 @@ func writeDiffBlock(sb *strings.Builder, s, prefix string) {
 	if total > updatePreviewMaxLines {
 		lines = lines[:updatePreviewMaxLines]
 	}
-	for _, l := range lines {
+	// 行号列宽按"最大可能行号"算,右对齐,这样多行 diff 视觉对齐。
+	lineNoWidth := 0
+	if startLine > 0 {
+		lineNoWidth = numDigits(startLine + total - 1)
+	}
+	for i, l := range lines {
 		if len(l) > updatePreviewMaxWidth {
 			l = l[:updatePreviewMaxWidth-3] + "..."
 		}
-		sb.WriteString(prefix)
+		if startLine > 0 {
+			ln := itoa(startLine + i)
+			sb.WriteString(strings.Repeat(" ", lineNoWidth-len(ln)))
+			sb.WriteString(ln)
+			sb.WriteByte(' ')
+		}
+		sb.WriteString(sign)
+		sb.WriteByte(' ')
 		sb.WriteString(l)
 		sb.WriteByte('\n')
 	}
 	if total > updatePreviewMaxLines {
+		// "... (N more lines)" 行不带行号 / sign,colorizeDiffBlock 单独识别此前缀染暗。
 		sb.WriteString("... (")
 		sb.WriteString(itoa(total - updatePreviewMaxLines))
 		sb.WriteString(" more lines)\n")
 	}
+}
+
+// diffSignByte 返回行内 diff 符号字节('+' / '-'),跳过前导空白和数字行号。
+// 行不属于 diff 行(eg. "... more lines"、注释)返回 0。
+//
+// 识别:
+//
+//	"+ foo"        → '+'
+//	"  42 + foo"   → '+'
+//	"-bar"         → '-'(防御性,正常会有空格,但也接受)
+//	"  abc"        → 0
+//	""             → 0
+func diffSignByte(l string) byte {
+	i := 0
+	// 跳过前导空白
+	for i < len(l) && l[i] == ' ' {
+		i++
+	}
+	// 跳过可选的数字行号
+	if i < len(l) && l[i] >= '0' && l[i] <= '9' {
+		for i < len(l) && l[i] >= '0' && l[i] <= '9' {
+			i++
+		}
+		// 行号后必须跟空格,否则不算行号(防止把 "5xxx" 之类当成 5 + "xxx")
+		if i >= len(l) || l[i] != ' ' {
+			return 0
+		}
+		i++
+	}
+	if i < len(l) && (l[i] == '+' || l[i] == '-') {
+		return l[i]
+	}
+	return 0
+}
+
+// numDigits 返回正整数 n 的十进制位数。0 / 负数视作 1 位。
+func numDigits(n int) int {
+	if n < 10 {
+		return 1
+	}
+	d := 0
+	for n > 0 {
+		d++
+		n /= 10
+	}
+	return d
 }
 
 // extractMainArg 从 LLM 给的 args JSON 里抽取一个最具代表性的字段值,显示到行尾括号里。
