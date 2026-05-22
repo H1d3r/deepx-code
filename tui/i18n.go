@@ -1,9 +1,6 @@
 package tui
 
 import (
-	"os"
-	"path/filepath"
-	"strings"
 	"sync/atomic"
 )
 
@@ -31,14 +28,14 @@ func CurrentLang() Lang {
 	return LangZH
 }
 
-// SetLang 切换语言并持久化到 ~/.deepx/lang。
+// SetLang 切换语言并持久化到 ~/.deepx/meta.json。
 // 失败(权限/磁盘满)不致命,只是下次启动回退到默认中文。
 func SetLang(l Lang) {
 	if l != LangEN {
 		l = LangZH
 	}
 	currentLang.Store(l)
-	_ = saveLangToDisk(l)
+	metaUpdate(func(m *meta) { m.Lang = string(l) })
 }
 
 // T 按当前语言查表,key 找不到回退 key 本身(方便开发期定位漏译)。
@@ -56,39 +53,12 @@ func T(key string) string {
 	return key
 }
 
-// langPath 返回 ~/.deepx/lang 路径。
-func langPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".deepx", "lang")
-}
-
+// loadLangFromDisk 从 ~/.deepx/meta.json 读语言。没设置 / 不识别回退中文。
 func loadLangFromDisk() Lang {
-	p := langPath()
-	if p == "" {
-		return LangZH
-	}
-	data, err := os.ReadFile(p)
-	if err != nil {
-		return LangZH
-	}
-	if Lang(strings.TrimSpace(string(data))) == LangEN {
+	if Lang(metaGet().Lang) == LangEN {
 		return LangEN
 	}
 	return LangZH
-}
-
-func saveLangToDisk(l Lang) error {
-	p := langPath()
-	if p == "" {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(p, []byte(string(l)), 0o644)
 }
 
 // translations 是所有 UI 字符串的多语言映射。key 用 dotted-namespace 风格,方便分组管理。

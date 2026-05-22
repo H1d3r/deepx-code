@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -18,7 +16,7 @@ import (
 const (
 	githubRepoOwner = "itmisx"
 	githubRepoName  = "deepx-code"
-	upgradeCheckTTL  = 6 * time.Hour // 缓存 6 小时,避免频繁打 GitHub API
+	upgradeCheckTTL = 6 * time.Hour // 缓存 6 小时,避免频繁打 GitHub API
 )
 
 // upgradeCheckResult 是版本检查结果,goroutine 完成后通过 tea.Msg 发回主模型。
@@ -28,77 +26,27 @@ type upgradeCheckResult struct {
 	Err           error  // 网络 / API 失败时非 nil,model 视为"未知"忽略掉
 }
 
-// upgradeCheckCache 是落盘缓存,避免每次启动都打 GitHub API。
-// 走 ~/.deepx/upgrade_check.json,可以读则不发请求,过期才重新探测。
-type upgradeCheckCache struct {
-	CheckedAt     time.Time `json:"checked_at"`
-	LatestVersion string    `json:"latest_version"`
-	URL           string    `json:"url"`
-}
-
-func cachePath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".deepx", "upgrade_check.json")
-}
-
-func readUpgradeCheckCache() (*upgradeCheckCache, bool) {
-	p := cachePath()
-	if p == "" {
-		return nil, false
-	}
-	data, err := os.ReadFile(p)
-	if err != nil {
-		return nil, false
-	}
-	var c upgradeCheckCache
-	if err := json.Unmarshal(data, &c); err != nil {
-		return nil, false
-	}
-	if time.Since(c.CheckedAt) > upgradeCheckTTL {
-		return nil, false
-	}
-	return &c, true
-}
-
-func writeUpgradeCheckCache(c upgradeCheckCache) {
-	p := cachePath()
-	if p == "" {
-		return
-	}
-	_ = os.MkdirAll(filepath.Dir(p), 0o755)
-	data, err := json.Marshal(c)
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(p, data, 0o644)
-}
-
 // checkForUpgradeCmd 返回一个 tea.Cmd 在后台异步检查新版本,完成后发 upgradeCheckResult。
-// 命中本地缓存时跳过网络请求直接返回缓存;失败(timeout / 4xx / 5xx)静默,不弹错误。
+// 缓存(~/.deepx/meta.json)在 TTL 内且 latest 仍比当前新时直接复用,否则打 GitHub API。
+// 失败(timeout / 4xx / 5xx)静默,不弹错误。
 //
-// 缓存的"latest" ≤ currentVersion 时强制忽略缓存重拉 —— 因为既然当前已经 ≥ 缓存里那个,
-// 这个缓存就给不了"是不是有更新版"的信息;不重拉的话发了新版用户重启也不会被提醒,
-// 得等 TTL(6 小时)。重拉一次相对廉价(单 GitHub API call)。
+// "缓存 latest ≤ currentVersion" 视同过期重拉 —— 既然当前已经 ≥ 缓存里那个,缓存给不了
+// "是不是有更新版"的信息;不重拉的话发了新版用户重启也不会被提醒,得等 6 小时 TTL。
 func checkForUpgradeCmd(currentVersion string) tea.Cmd {
 	return func() tea.Msg {
-		if c, ok := readUpgradeCheckCache(); ok {
-			if !versionNewer(c.LatestVersion, currentVersion) {
-				// 缓存里的 latest 已经不比当前新,等于过期 —— 落到下面重拉
-			} else {
-				return upgradeCheckResult{LatestVersion: c.LatestVersion, URL: c.URL}
-			}
+		m := metaGet()
+		fresh := !m.UpgradeCheckedAt.IsZero() && time.Since(m.UpgradeCheckedAt) <= upgradeCheckTTL
+		if fresh && versionNewer(m.LatestVersion, currentVersion) {
+			return upgradeCheckResult{LatestVersion: m.LatestVersion, URL: m.UpgradeURL}
 		}
 		ver, url, err := fetchLatestRelease()
 		if err != nil {
 			return upgradeCheckResult{Err: err}
 		}
-		writeUpgradeCheckCache(upgradeCheckCache{
-			CheckedAt:     time.Now(),
-			LatestVersion: ver,
-			URL:           url,
+		metaUpdate(func(m *meta) {
+			m.UpgradeCheckedAt = time.Now()
+			m.LatestVersion = ver
+			m.UpgradeURL = url
 		})
 		return upgradeCheckResult{LatestVersion: ver, URL: url}
 	}
