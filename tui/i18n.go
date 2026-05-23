@@ -133,8 +133,8 @@ var translations = map[string]map[Lang]string{
 	},
 
 	// === 模式提示 ===
-	"mode.plan": {LangZH: "plan", LangEN: "plan"},
-	"mode.auto": {LangZH: "auto", LangEN: "auto"},
+	"mode.plan":   {LangZH: "plan", LangEN: "plan"},
+	"mode.auto":   {LangZH: "auto", LangEN: "auto"},
 	"mode.review": {LangZH: "review", LangEN: "review"},
 	"mode.current_prefix": {
 		LangZH: "当前模式: ",
@@ -161,17 +161,20 @@ var translations = map[string]map[Lang]string{
 	"panel.status":    {LangZH: "状态", LangEN: "Status"},
 	"panel.usage":     {LangZH: "用量", LangEN: "Usage"},
 	"panel.commands":  {LangZH: "命令", LangEN: "Commands"},
+	"panel.codegraph": {LangZH: "代码图谱", LangEN: "CodeGraph"},
 	"panel.plan":      {LangZH: "计划", LangEN: "Plan"},
 
 	// === Right panel labels ===
-	"panel.label.flash":  {LangZH: "flash ", LangEN: "flash "},
-	"panel.label.pro":    {LangZH: "pro   ", LangEN: "pro   "},
-	"panel.label.status": {LangZH: "status", LangEN: "status"},
-	"panel.label.mode":   {LangZH: "mode  ", LangEN: "mode  "},
-	"panel.label.prompt": {LangZH: "prompt", LangEN: "prompt"},
-	"panel.label.output": {LangZH: "output", LangEN: "output"},
-	"panel.label.cache":  {LangZH: "cache ", LangEN: "cache "},
-	"panel.label.time":   {LangZH: "time  ", LangEN: "time  "},
+	"panel.label.flash":   {LangZH: "flash ", LangEN: "flash "},
+	"panel.label.pro":     {LangZH: "pro   ", LangEN: "pro   "},
+	"panel.label.status":  {LangZH: "status", LangEN: "status"},
+	"panel.label.mode":    {LangZH: "mode  ", LangEN: "mode  "},
+	"panel.label.prompt":  {LangZH: "prompt", LangEN: "prompt"},
+	"panel.label.output":  {LangZH: "output", LangEN: "output"},
+	"panel.label.cache":   {LangZH: "cache ", LangEN: "cache "},
+	"panel.label.time":    {LangZH: "duration", LangEN: "duration"},
+	"panel.label.cgstate": {LangZH: "状态", LangEN: "status"},
+	"panel.label.cgcalls": {LangZH: "调用次数", LangEN: "calls "},
 
 	// === Status values ===
 	"status.idle":      {LangZH: "idle", LangEN: "idle"},
@@ -179,6 +182,12 @@ var translations = map[string]map[Lang]string{
 	"status.streaming": {LangZH: "streaming", LangEN: "streaming"},
 	"status.tool":      {LangZH: "tool", LangEN: "tool"},
 	"status.error":     {LangZH: "error", LangEN: "error"},
+
+	// === CodeGraph 状态值 ===
+	"codegraph.idle":    {LangZH: "—", LangEN: "—"},
+	"codegraph.loading": {LangZH: "加载", LangEN: "loading"},
+	"codegraph.ready":   {LangZH: "就绪", LangEN: "ready"},
+	"codegraph.stale":   {LangZH: "更新", LangEN: "stale"},
 
 	// === Setup modal ===
 	"setup.title": {

@@ -273,6 +273,9 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 	tools.SetSkillLoader(loader)
 	skillCatalog := buildSkillCatalog(loader)
 
+	// 代码图谱:绑定到当前 workspace 根,懒构建(首次 CodeGraph 调用时才遍历解析)。
+	tools.SetCodeGraphRoot(wd)
+
 	m := model{
 		chatContent:     newChatLog(maxChatBytes),
 		currentReply:    &strings.Builder{},
@@ -393,10 +396,9 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 		m.input.Focus()
 	}
 
-	// web dashboard 启用时:把含 token 的完整 URL 复制到剪贴板(失败也无妨,地址就在提示里),
-	// 再在 chat 区给一条提示。复制后可直接粘贴,终端支持的话也能点提示里的链接跳转。
+	// web dashboard 启用时,在 chat 区给一条提示(含完整 URL)。不再自动复制到剪贴板 ——
+	// 现在 chat 区可直接选中复制,终端支持的话也能点链接跳转,自动占用剪贴板反而打扰。
 	if webURL != "" {
-		_ = writeClipboardText(webURL)
 		m.appendChat("System", fmt.Sprintf(T("web.ready"), webURL))
 	}
 
@@ -500,10 +502,6 @@ func (m model) Init() tea.Cmd {
 	// checkForUpgradeCmd 异步打 GitHub Releases API,完成后通过 upgradeCheckResult 回送 Update。
 	// cursorBlinkTick 自己驱动真实光标的明灭节奏。
 	cmds := []tea.Cmd{textinput.Blink, m.input.Focus(), checkForUpgradeCmd(m.version), cursorBlinkTick()}
-	// web 开启时,启动就把 dashboard 地址也通过 OSC52 写入剪贴板(pbcopy 已在 initialModel 里做了)。
-	if m.webURL != "" {
-		cmds = append(cmds, tea.SetClipboard(m.webURL))
-	}
 	return tea.Batch(cmds...)
 }
 
@@ -541,10 +539,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		leftW, vpH := m.layout()
 		m.chatViewport.SetWidth(leftW)
 		m.chatViewport.SetHeight(vpH)
-		// 输入区 = 左侧固定 gutter("> ")+ 右侧 textarea。textarea 只占 leftW-gutter,
-		// 跟上方 chat 同宽 —— 竖分隔线一路画到底,输入框落在分隔线左侧。
-		// gutter 由 view.go 单独画。不再用 textarea 自带 prompt,也不外套 lipgloss Width。
-		m.input.SetWidth(leftW - inputGutterWidth)
+		// 输入区 = 左侧固定 gutter("> ")+ 右侧 textarea。textarea 占整宽 m.width-gutter
+		//(分隔线只到 body 底,输入区横跨整行)。gutter 由 view.go 单独画。
+		m.input.SetWidth(m.width - inputGutterWidth)
 		m.input.SetHeight(inputAreaHeight - 2) // 减去上下各 1 行居中留白
 		// 窗口尺寸变了 → wrap 重算 → 老 line 号失效,必须清选区
 		m.selecting = false

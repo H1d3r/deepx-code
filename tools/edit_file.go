@@ -60,6 +60,7 @@ func EditFile(args map[string]any) ToolResult {
 	if err := os.WriteFile(absPath, []byte(updated), 0o644); err != nil {
 		return ToolResult{Output: fmt.Sprintf("写入失败: %v", err), Success: false}
 	}
+	CodeGraphInvalidate() // 文件变了,代码图谱缓存失效,下次查询重建
 	return ToolResult{
 		Output:  fmt.Sprintf("已替换 %d 处 -> %s", count, absPath),
 		Success: true,

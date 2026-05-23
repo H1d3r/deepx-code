@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"deepx/tools"
+
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -151,21 +153,15 @@ func (m model) View() tea.View {
 		}
 		inputRows[i] = gutter + tl
 	}
-	// 输入区每行也带上竖分隔线:左侧 gutter+textarea 补齐到 leftW,接 │,右侧 rightW 留白。
-	// 这样分隔线从 body 一路画到屏幕底,底边跟输入框底对齐,视觉上是一条贯通的竖线。
-	rightPad := strings.Repeat(" ", rightW)
-	withDivider := func(left string) string {
-		return padLinesToWidth(left, leftW) + dividerChar + rightPad
-	}
+	// 输入区不画竖分隔线 —— 分隔线只到 body 底(对话+右栏区),输入区整宽。
+	// 顶部 / 底部按 inputTopPad / inputBotPad 留白,normalizeFrame 会把空行补成整宽。
 	inputLines := make([]string, 0, len(inputRows)+inputTopPad+inputBotPad)
 	for i := 0; i < inputTopPad; i++ {
-		inputLines = append(inputLines, withDivider("")) // 顶部留白行
+		inputLines = append(inputLines, "") // 顶部留白行
 	}
-	for _, row := range inputRows {
-		inputLines = append(inputLines, withDivider(row))
-	}
+	inputLines = append(inputLines, inputRows...)
 	for i := 0; i < inputBotPad; i++ {
-		inputLines = append(inputLines, withDivider("")) // 底部留白行
+		inputLines = append(inputLines, "") // 底部留白行
 	}
 	inputBlock := strings.Join(inputLines, "\n")
 
@@ -280,6 +276,19 @@ func statusColor(s string) color.Color {
 		return lipgloss.Color("9")
 	}
 	return lipgloss.Color("7")
+}
+
+// codegraphColor 给代码图谱状态上色:加载=高亮、就绪=绿、更新=黄、未构建=暗。
+func codegraphColor(s string) color.Color {
+	switch s {
+	case "loading":
+		return highlightColor
+	case "ready":
+		return lipgloss.Color("10")
+	case "stale":
+		return lipgloss.Color("11")
+	}
+	return subtleColor
 }
 
 func statusIcon(s string) string {
@@ -486,11 +495,7 @@ func (m model) rightPanelView() string {
 		flashIndicator + label(T("panel.label.flash")) + " " + flashID,
 		proIndicator + label(T("panel.label.pro")) + " " + proID,
 	})...)
-	rows = append(rows, section(T("panel.status"), []string{
-		statusLine,
-		modeLine,
-	})...)
-	// 首轮 API 调用结束才能拿到 lastUsage,没拿到前用 "—" 占位,保持布局一致。
+	// 用量紧跟模型。首轮 API 调用结束才能拿到 lastUsage,没拿到前用 "—" 占位,保持布局一致。
 	// 分母用 PromptTokens 而非 hit+miss:DeepSeek API 保证 prompt_tokens = hit + miss,
 	// 但 hit/miss 是 DeepSeek 私有字段,兼容 OpenAI 的模型可能不返回,用 PromptTokens 更稳。
 	promptStr, outputStr, cacheStr := "—", "—", "—"
@@ -508,6 +513,17 @@ func (m model) rightPanelView() string {
 		label(T("panel.label.output")) + " " + outputStr,
 		label(T("panel.label.cache")) + " " + cacheStr,
 		label(T("panel.label.time")) + " " + formatElapsed(elapsed),
+	})...)
+	rows = append(rows, section(T("panel.status"), []string{
+		statusLine,
+		modeLine,
+	})...)
+	// 代码图谱:独立区块,显示状态 + 累计调用次数。
+	cgState := tools.CodeGraphStatus()
+	rows = append(rows, section(T("panel.codegraph"), []string{
+		label(T("panel.label.cgstate")) + " " +
+			lipgloss.NewStyle().Foreground(codegraphColor(cgState)).Render(T("codegraph."+cgState)),
+		label(T("panel.label.cgcalls")) + " " + strconv.Itoa(tools.CodeGraphCalls()),
 	})...)
 	rows = append(rows, section(T("panel.commands"), []string{
 		label("/plan   ") + "Write/Bash off",

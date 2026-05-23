@@ -28,6 +28,7 @@ func WriteFile(args map[string]any) ToolResult {
 	if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
 		return ToolResult{Output: fmt.Sprintf("写入失败: %v", err), Success: false}
 	}
+	CodeGraphInvalidate() // 文件变了,代码图谱缓存失效,下次查询重建
 	return ToolResult{
 		Output:  fmt.Sprintf("已写入 %s (%d bytes)", absPath, len(content)),
 		Success: true,

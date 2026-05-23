@@ -419,4 +419,34 @@ var Tools = []Tool{
 		// 不需要 pro 显式更新;子 agent 偶尔需要写中间状态(实际被吞,以 scheduler 为准)。
 		Roles: []string{RoleSubAgent},
 	},
+	{
+		Name: "CodeGraph",
+		Description: "代码图谱:对当前 workspace 做符号级导航 + 调用关系查询,比 Grep 更准。" +
+			"\n\n**何时调用**(优先于 Grep):" +
+			"\n- 某个函数/类型/方法定义在哪 → op=def" +
+			"\n- 谁调用了某函数(改它的影响面)→ op=callers;某函数调用了哪些 → op=callees" +
+			"\n- 谁实现了某接口(Go 隐式接口,grep 查不到)→ op=implementers;谁继承/嵌入某类型 → op=subtypes;某类型派生自什么 → op=supertypes" +
+			"(注:继承/实现边覆盖 Go 及主流 OOP 语言,空结果会列出已覆盖范围、不代表无关系)" +
+			"\n- 改某符号会牵连哪些下游(影响面/blast radius,传递闭包)→ op=impact(可给 depth)" +
+			"\n- 谁引用/用到了某个名字 → op=refs" +
+			"\n- 按名字找符号、或列某类符号 → op=symbols(可加 kind 过滤)" +
+			"\n- 看一个文件有哪些符号 → op=outline;它 import 了什么 → op=imports(给 path)" +
+			"\n\n**何时不要**:搜的是注释/字符串/任意文本(用 Grep);非代码文件。" +
+			"\n\n结果是 `文件:行`(+签名/调用方),已截断分页。注:调用关系按名解析,同名会合并。" +
+			"\n支持语言:Go(stdlib 精确)+ TS/JS/Python/Java/Rust/C/C++/C#/Ruby/PHP/Kotlin/Swift/Scala/Dart/Vue/Svelte。其它(shell/css/json/md 等)用 Grep。",
+		Parameters: ToolParam{
+			Type: "object",
+			Properties: map[string]PropDef{
+				"op":    {Type: "string", Enum: []string{"symbols", "def", "refs", "callers", "callees", "implementers", "subtypes", "supertypes", "impact", "imports", "outline", "reindex"}, Description: "操作类型"},
+				"name":  {Type: "string", Description: "符号名;def/refs/callers/callees/implementers/subtypes/supertypes/impact 必填,支持 \"Type.Method\" 限定名;symbols 作模糊过滤"},
+				"path":  {Type: "string", Description: "outline/imports 用:相对 workspace 的文件路径"},
+				"kind":  {Type: "string", Enum: []string{"func", "method", "type", "var", "const", "field"}, Description: "可选,按符号种类过滤"},
+				"depth": {Type: "integer", Description: "impact 用:传递闭包跳数,默认 3"},
+				"max":   {Type: "integer", Description: "最多返回几条,默认 60"},
+			},
+			Required: []string{"op"},
+		},
+		Executor: CodeGraph,
+		ReadOnly: true,
+	},
 }
