@@ -105,6 +105,10 @@ var translations = map[string]map[Lang]string{
 		LangZH: "切换语言 / Switch language",
 		LangEN: "Switch language / 切换语言",
 	},
+	"cmd.compact.desc": {
+		LangZH: "手动压缩会话历史(保留 20%)",
+		LangEN: "Manually compact session history (keep 20%)",
+	},
 	"cmd.help.desc": {
 		LangZH: "帮助",
 		LangEN: "Help",
@@ -121,6 +125,7 @@ var translations = map[string]map[Lang]string{
 			"- `/skills` — 列出可用 skill\n" +
 			"- `/mcp-list` `/mcp-add` `/mcp-delete` — 管理 MCP server\n" +
 			"- `/lang` — 切换语言 (中/英)\n" +
+			"- `/compact` — 手动压缩会话历史(保留尾部 20%)\n" +
 			"- `/help` — 帮助\n\n" +
 			"**快捷键**\n\n" +
 			"- `Enter` — 发送\n" +
@@ -137,6 +142,7 @@ var translations = map[string]map[Lang]string{
 			"- `/skills` — List available skills\n" +
 			"- `/mcp-list` `/mcp-add` `/mcp-delete` — Manage MCP servers\n" +
 			"- `/lang` — Switch language (zh/en)\n" +
+			"- `/compact` — Manually compact session history (keep last 20%)\n" +
 			"- `/help` — Help\n\n" +
 			"**Keybindings**\n\n" +
 			"- `Enter` — Send\n" +

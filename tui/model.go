@@ -145,11 +145,6 @@ type model struct {
 	pendingCompactSys   string
 	pendingCompactTools string
 
-	// 空闲压缩:会话静默 idleCompactAfter 后跑一次缓存友好压缩(趁缓存仍热,把历史压小,
-	// 避免缓存过期后下次满量冷重算)。lastActivityAt 记最近一轮结束时间,idleCompacted 防重复。
-	lastActivityAt time.Time
-	idleCompacted  bool
-
 	// compacting:压缩 Cmd 在飞时为 true。三个触发点(70%/重启/空闲)都 gate 在它上,
 	// 防止并发压缩(否则第二个结果的 cutIdx 会越界已截断的 history → panic)。
 	compacting bool
@@ -184,8 +179,8 @@ type model struct {
 	// latestVersion 是异步检查得到的 GitHub latest release,空则没检查到 / 网络失败。
 	// upgradeAvailable 由 versionNewer(latestVersion, version) 算出,渲染时用来决定是否
 	// 在右栏显示"有新版本"提示。
-	version         string
-	latestVersion   string
+	version          string
+	latestVersion    string
 	upgradeAvailable bool
 	upgradeURL       string
 
@@ -228,6 +223,7 @@ type compressionResultMsg struct {
 	cutIdx          int // 从 snapshot 算出的截断位置
 	compressedTurns int // 本次压缩的 user 轮数
 	err             error
+	manual          bool // true = /compact 手动触发:失败要给用户反馈,而非像后台触发那样静默
 }
 
 func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub *web.Hub, webURL string) model {
@@ -491,8 +487,8 @@ func (m model) submitUserInput(input string) (model, tea.Cmd) {
 	}
 	// 斜杠命令:仅匹配已知命令,粘贴的路径类文本不误触
 	if matches := filterSlashCommands(input); len(matches) > 0 {
-		m.handleSlashCommand(matches[0].name)
-		return m, nil
+		cmd := m.handleSlashCommand(matches[0].name)
+		return m, cmd
 	}
 	// 流式中再提交(主要是 web 端可能在生成时点发送)→ 丢弃,避免并发两个 stream。
 	if m.streaming {
@@ -554,7 +550,7 @@ func (m model) Init() tea.Cmd {
 	// textarea 的光标 blink 由 Focus() 返回,启动时一并发起。
 	// checkForUpgradeCmd 异步打 GitHub Releases API,完成后通过 upgradeCheckResult 回送 Update。
 	// cursorBlinkTick 自己驱动真实光标的明灭节奏。
-	cmds := []tea.Cmd{textinput.Blink, m.input.Focus(), checkForUpgradeCmd(m.version), cursorBlinkTick(), idleCheckCmd()}
+	cmds := []tea.Cmd{textinput.Blink, m.input.Focus(), checkForUpgradeCmd(m.version), cursorBlinkTick()}
 	// 重启检测到前缀变化且历史够大时,在首请求前先跑一次缓存友好压缩。
 	if m.pendingCompactSys != "" {
 		cmds = append(cmds, m.restartCompactionCmd())
@@ -957,8 +953,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				chosen := matches[m.commandPaletteIdx].name
 				m.input.SetValue("")
 				m.commandPaletteIdx = 0
-				m.handleSlashCommand(chosen)
-				return m, nil
+				return m, m.handleSlashCommand(chosen)
 			}
 		} else {
 			// palette 没在显示,idx 复位避免下次打开时停在过去位置
@@ -1313,9 +1308,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamCh = nil
 		m.cancelAgent = nil
 		m.turnElapsed = time.Since(m.turnStartedAt)
-		// 记录活动时间,重置空闲压缩标记(新一轮活动 → 空闲计时归零)。
-		m.lastActivityAt = time.Now()
-		m.idleCompacted = false
 		m.refreshViewport()
 
 		// 显示区按字节预算自动裁剪 (chatLog.Append/Open 内部已调 trim),
@@ -1335,7 +1327,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			entry := m.entryForModel(lastModel)
 			m.compacting = true
 			return m, func() tea.Msg {
-				summary, cutIdx, compressedTurns, err := runCompression(lastSys, lastTools, snapshot, entry, ctxWin)
+				summary, cutIdx, compressedTurns, err := agent.RunCompression(lastSys, lastTools, snapshot, entry, ctxWin)
 				return compressionResultMsg{
 					summary:         summary,
 					cutIdx:          cutIdx,
@@ -1368,8 +1360,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case compressionResultMsg:
 		m.compacting = false
 		if msg.err != nil {
-			// 压缩都是后台自动触发(70%/重启/空闲),失败静默 —— 不往聊天区打扰用户;
-			// 下次触发会重试。历史不变,继续正常对话。
+			// 后台自动触发(70%/重启/空闲)失败静默 —— 不往聊天区打扰用户,下次触发会重试。
+			// 但 /compact 是用户主动发起的,压不动(历史太小/轮数不足)要明确告知,否则像没反应。
+			if msg.manual {
+				m.chatContent.Open(kindSystem, "**压缩跳过**:"+msg.err.Error())
+				m.refreshViewport()
+			}
 			return m, nil
 		}
 		// 兜底:cutIdx 基于触发时的快照算;若期间 history 已被(另一次压缩/新消息)改动到
@@ -1388,18 +1384,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_ = m.session.SaveGob("history.gob", m.history)
 		}
 
+		// 状态栏 prompt 直接读 m.lastUsage.PromptTokens(上轮真实 API 返回值),压缩截断 history
+		// 后它仍是压缩前的大数,直到下一轮请求才更新 —— 视觉上像"压了但没动"。这里压缩成功后
+		// 立即用本地估算重算下一次 prompt 的量级写回,状态栏即时反映缩小后的上下文。
+		// 前缀已变,下一轮缓存命中未知,旧 hit 数会让 cache% 失真(甚至 >100%),一并清零。
+		if m.lastUsage != nil {
+			m.lastUsage.PromptTokens = m.estimatePromptTokens()
+			m.lastUsage.PromptCacheHitTokens = 0
+		}
+
 		m.chatContent.Open(kindSystem, fmt.Sprintf("**已压缩会话历史（%d 轮→摘要）**", msg.compressedTurns))
 		m.refreshViewport()
 		return m, nil
-
-	case idleCheckMsg:
-		// 自循环空闲检查:静默够久且历史够大,趁缓存仍热跑一次压缩;无论是否触发都续上下一拍。
-		if m.shouldIdleCompact() {
-			m.idleCompacted = true
-			m.compacting = true
-			return m, tea.Batch(m.idleCompactionCmd(), idleCheckCmd())
-		}
-		return m, idleCheckCmd()
 	}
 
 	var inputCmd tea.Cmd
@@ -1413,168 +1409,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, tea.Batch(cmds...)
-}
-
-// === 会话压缩 ===
-
-// keepRecentTurns 是压缩时至少保留的最近 user 轮数下限(与 20% 预算取较大者)。
-// 5 轮通常能覆盖"当前任务 + 最近指代",又不过度占用预算。可按需调整。
-const keepRecentTurns = 5
-
-// compactionTimeout 是摘要 LLM 调用的硬超时。没有它,卡住的请求会让 m.compacting 永远为 true、
-// 把所有压缩堵死。给得宽松(容纳大摘要生成),只为兜住"永不返回",超时即失败、下轮重试。
-const compactionTimeout = 3 * time.Minute
-
-// compressionPrompt 是压缩历史对话时发给 LLM 的 system prompt。
-const compressionPrompt = `你是一个会话历史压缩助手。将对话历史压缩为结构化摘要。
-
-## 摘要需保留
-- 用户的任务目标和明确要求（尽量原文保留）
-- 已修改的文件及改动目的
-- 发现的错误和修复方案
-- 架构设计决策
-- 未完成的任务和下一步计划
-
-## 可以丢弃
-- 重复的调试尝试
-- 工具调用的详细输出
-- 已解决且不再相关的中间讨论
-
-如果输入中有 [previous summary],将其与新对话合并为一个连贯摘要。
-
-## 输出格式
-[自然语言摘要]
-
-最后模式: plan/auto`
-
-// warmCompressInstruction 是缓存友好压缩时追加在历史末尾的指令(对应旧 compressionPrompt 的
-// 内容,但作为尾部 user 消息而非独立 system,从而不破坏 [system][tools][history] 前缀的命中)。
-const warmCompressInstruction = `请把以上完整对话(包括 system 提示词里已有的"会话摘要"部分,若有)压缩成一份新的、连贯的结构化摘要,用它替换旧摘要。
-
-## 摘要需保留
-- 用户的任务目标和明确要求(尽量原文保留)
-- 已修改的文件及改动目的
-- 发现的错误和修复方案
-- 架构设计决策
-- 未完成的任务和下一步计划
-
-## 可以丢弃
-- 重复的调试尝试
-- 工具调用的详细输出
-- 已解决且不再相关的中间讨论
-
-## 输出格式
-[自然语言摘要]
-最后模式: plan/auto`
-
-// runCompression 执行一次会话压缩:按 context_window × 20% 保留尾部上下文。
-// 在 bubbletea Cmd goroutine 中调用。history 仅含会话消息(不含 system / 旧摘要消息)。
-//
-// 缓存友好:传入 lastSystemPrompt(上次实际发送的 system 文本)时,摘要请求构造成
-// [lastSystemPrompt] + history[:keepStart] + [尾部压缩指令],并带上 lastToolSpecsJSON 还原的
-// 工具集 —— 这串前缀正是上次缓存下来的,几乎全命中,只有尾部指令是 miss。
-// lastSystemPrompt 为空(无快照)时退回冷路径:compressionPrompt 当 system + 拍平历史。
-func runCompression(lastSystemPrompt, lastToolSpecsJSON string, history []agent.ChatMessage, model agent.ModelEntry, ctxWin int) (
-	summary string, cutIdx int, compressedTurns int, err error) {
-
-	// 从尾部按 token 估算保留 context_window × 20% 的上下文。
-	totalUsers := 0
-	for _, msg := range history {
-		if msg.Role == "user" {
-			totalUsers++
-		}
-	}
-	if totalUsers <= 2 {
-		return "", 0, 0, fmt.Errorf("user 轮数不足,无需压缩")
-	}
-
-	// 保留量 = max(20% 预算, 最近 keepRecentTurns 轮)。两个口径**各扫一次**取保留更多者(切点更靠前),
-	// 任一未命中(如不足 5 轮)就优雅退回另一个 —— 避免"轮数不足 → 拒绝压缩"导致大历史压不动。
-	keepTarget := ctxWin * 20 / 100
-
-	budgetStart := len(history) // 按 token 预算:从尾部累加到 ~20% 窗口的 user 边界
-	cc := 0
-	for i := len(history) - 1; i >= 0; i-- {
-		// 与 sumHistoryChars 口径一致:含 ReasoningContent。推理模型会回传思考内容、计入 prompt,
-		// 漏算会低估历史 → budget 不达标 → 退回 5 轮、过度压缩(实测就是这个 bug)。
-		cc += len([]rune(history[i].Content)) + len([]rune(history[i].ReasoningContent))
-		if history[i].Role == "user" && cc/3 >= keepTarget {
-			budgetStart = i
-			break
-		}
-	}
-	turnStart := len(history) // 按最近 keepRecentTurns 个 user 轮
-	uc := 0
-	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Role == "user" {
-			uc++
-			if uc >= keepRecentTurns {
-				turnStart = i
-				break
-			}
-		}
-	}
-	keepStart := budgetStart // 取保留更多者 = 更靠前的切点
-	if turnStart < keepStart {
-		keepStart = turnStart
-	}
-	if keepStart <= 0 || keepStart >= len(history) {
-		// keepStart>=len:历史比 20% 预算还小且不足 5 轮;keepStart<=0:整段都要留,没有可压缩前缀。
-		return "", 0, 0, fmt.Errorf("上下文不足,跳过压缩")
-	}
-	cutIdx = keepStart
-
-	lastMode := "auto"
-	compressedUserCount := 0
-	for _, msg := range history[:keepStart] {
-		if msg.Role == "user" {
-			compressedUserCount++
-		}
-		if msg.Role == "assistant" && strings.Contains(msg.Content, "当前模式: plan") {
-			lastMode = "plan"
-		}
-		if msg.Role == "assistant" && strings.Contains(msg.Content, "当前模式: auto") {
-			lastMode = "auto"
-		}
-	}
-	compressedTurns = compressedUserCount
-
-	summaryMax := ctxWin * 3 / 100
-	if summaryMax < 256 {
-		summaryMax = 256 // 最小 256 tok,避免太小失去摘要意义
-	}
-
-	// 硬超时:卡住的摘要请求不会永久占住 m.compacting 锁(否则压缩全堵死)。
-	ctx, cancel := context.WithTimeout(context.Background(), compactionTimeout)
-	defer cancel()
-
-	if lastSystemPrompt != "" {
-		// 缓存友好路径:复刻 [system][tools][history[:keepStart]] + 尾部指令。
-		convo := make([]agent.ChatMessage, 0, keepStart+2)
-		convo = append(convo, agent.ChatMessage{Role: "system", Content: lastSystemPrompt})
-		convo = append(convo, history[:keepStart]...)
-		convo = append(convo, agent.ChatMessage{Role: "user", Content: warmCompressInstruction})
-		toolSpecs := agent.UnmarshalToolSpecs(lastToolSpecsJSON)
-		summary, err = agent.CallWithTools(ctx, model.APIKey, model.BaseURL, model.Model, convo, toolSpecs, summaryMax)
-	} else {
-		// 冷路径:无快照,拍平历史走独立 system(必 miss,但正确)。
-		var inputBuf strings.Builder
-		for _, msg := range history[:keepStart] {
-			inputBuf.WriteString("[" + msg.Role + "]\n" + msg.Content + "\n\n")
-		}
-		convo := []agent.ChatMessage{
-			{Role: "system", Content: compressionPrompt},
-			{Role: "user", Content: inputBuf.String()},
-		}
-		summary, err = agent.CallOnce(ctx, model.APIKey, model.BaseURL, model.Model, convo, summaryMax)
-	}
-	if err != nil {
-		return "", 0, 0, err
-	}
-	if !strings.Contains(summary, "最后模式:") {
-		summary += "\n最后模式: " + lastMode
-	}
-	return summary, cutIdx, compressedTurns, nil
 }
 
 // buildUserMessage 把输入文本中的 [Image #N] 占位符替换成已落盘的图片绝对路径,
@@ -1714,8 +1548,9 @@ func modeNotification(mode agent.AgentMode, modelRole string) string {
 	return T("mode.current_prefix") + name + modelPart
 }
 
-// handleSlashCommand 处理本地斜杠命令。// handleSlashCommand 处理本地斜杠命令。
-func (m *model) handleSlashCommand(input string) {
+// handleSlashCommand 处理本地斜杠命令。多数命令只改本地状态、返回 nil;
+// 异步命令(如 /compact)返回 tea.Cmd 交给 bubbletea 调度。
+func (m *model) handleSlashCommand(input string) tea.Cmd {
 	cmd := strings.ToLower(strings.TrimSpace(input))
 	switch cmd {
 	case "/plan":
@@ -1761,10 +1596,50 @@ func (m *model) handleSlashCommand(input string) {
 		if CurrentLang() == LangEN {
 			m.langModalIdx = 1
 		}
+	case "/compact":
+		return m.startManualCompaction()
 	case "/help":
 		m.appendChat("assistant", T("help.body"))
 	default:
 		m.appendChat("assistant", fmt.Sprintf(T("mode.unknown_cmd"), cmd))
+	}
+	return nil
+}
+
+// startManualCompaction 处理 /compact:手动触发会话压缩,仍按 context_window × 20% 保留尾部。
+// 与 70% 自动触发(StreamDoneMsg 里)走同一套 runCompression + compressionResultMsg 流程,
+// 区别只在于不看 token 阈值——用户敲了就压。压不动(历史太小)由 runCompression 返回 err,
+// 经 manual 标记在结果处理处反馈给用户。
+func (m *model) startManualCompaction() tea.Cmd {
+	if m.session == nil || m.models.Pro.Model == "" {
+		m.appendChat("System", "无可用会话或 Pro 模型,无法压缩")
+		return nil
+	}
+	if m.compacting {
+		m.appendChat("System", "压缩正在进行中,请稍候")
+		return nil
+	}
+	ctxWin := m.models.Pro.ContextWindow
+	if ctxWin <= 0 {
+		ctxWin = 65536
+	}
+	// 拷贝 history 快照,异步执行(同 70% 触发逻辑)。
+	snapshot := make([]agent.ChatMessage, len(m.history))
+	copy(snapshot, m.history)
+	// 复刻上次实际发送的 model + system + tools,命中热缓存。
+	_, lastModel, lastSys, lastTools := m.session.LoadPrefixSnapshot()
+	entry := m.entryForModel(lastModel)
+	m.compacting = true
+	m.appendChat("System", "正在压缩会话历史…")
+	return func() tea.Msg {
+		summary, cutIdx, compressedTurns, err := agent.RunCompression(lastSys, lastTools, snapshot, entry, ctxWin)
+		return compressionResultMsg{
+			summary:         summary,
+			cutIdx:          cutIdx,
+			compressedTurns: compressedTurns,
+			err:             err,
+			manual:          true,
+		}
 	}
 }
 

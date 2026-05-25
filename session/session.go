@@ -173,6 +173,16 @@ func (m *Manager) SavePrefixSnapshot(sig, model, systemPrompt, toolSpecsJSON str
 	_ = os.WriteFile(path, data, 0o644)
 }
 
+// PrefixSnapshotTime 返回前缀快照(last_prompt)最后写入的时间,即"上次请求实际发送"的时刻 ——
+// 用于判断 DeepSeek 缓存是否还可能热。文件不存在返回 (零值, false)。
+func (m *Manager) PrefixSnapshotTime() (time.Time, bool) {
+	fi, err := os.Stat(filepath.Join(m.rootDir, lastPromptFile))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return fi.ModTime(), true
+}
+
 // LoadPrefixSnapshot 读取上次的前缀快照(签名/model 来自 state.json,system/tools 来自裸文件)。
 func (m *Manager) LoadPrefixSnapshot() (sig, model, systemPrompt, toolSpecsJSON string) {
 	path := filepath.Join(m.rootDir, "state.json")
