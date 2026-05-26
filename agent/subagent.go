@@ -74,7 +74,7 @@ func runSubAgent(ctx context.Context, in subAgentInput) subAgentResult {
 	// 安全/模式规则和 skill 目录(LoadSkill 因此可用)。专属部分放尾部,只有它是 miss。
 	var sb strings.Builder
 	sb.WriteString(coreSystemPrompt(in.Workspace, in.SkillCatalog))
-	sb.WriteString("\n\n# 子 agent 任务\n你是 deepx 的子 agent,只负责完成下面这一项,禁止 CreatePlan / SwitchModel(只做被分派的事,不要再拆分或换模型)。")
+	sb.WriteString("\n\n# 子 agent 任务\n你是 deepx 的子 agent,只负责完成下面这一项,禁止 CreatePlan / Todo / SwitchModel(只做被分派的事,不要再拆分、维护待办或换模型)。")
 	sb.WriteString("\n- 用户的原始任务背景: ")
 	sb.WriteString(in.UserTask)
 	sb.WriteString("\n- 你这一项的具体目标: ")

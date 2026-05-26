@@ -443,4 +443,34 @@ var Tools = []Tool{
 		// 不需要 pro 显式更新;子 agent 偶尔需要写中间状态(实际被吞,以 scheduler 为准)。
 		Roles: []string{RoleSubAgent},
 	},
+	{
+		Name: "Todo",
+		Description: "维护一个对用户可见的待办清单,展示并随进度勾选——这是给用户的进度透明度,不派子 agent、你自己一步步执行。\n\n" +
+			"**何时用**:任务有 ≥3 个有先后顺序的步骤、值得让用户看到进度(从零搭应用、跨多文件改动、调试修复链路)。开工前先列出全部步骤,然后每开始/完成一步就重发整张清单更新状态。\n\n" +
+			"**何时不用**:单步或简单任务(直接做);真正可并行、互相独立的扇出任务用 CreatePlan(那会派并发子 agent),搭一个连贯的应用不要用 CreatePlan。\n\n" +
+			"**用法(全量快照)**:每次调用都传完整 todos 列表,每项含 content + status。新增 / 标记进行中 / 完成 / 调整,都重发整张表(不是增量)。同一时刻最多一项 in_progress。",
+		Parameters: ToolParam{
+			Type: "object",
+			Properties: map[string]PropDef{
+				"todos": {
+					Type:        "array",
+					Description: "完整的待办列表(全量快照,按执行顺序排列)。",
+					Items: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"content": map[string]any{"type": "string", "description": "这一步做什么(一句话)"},
+							"status":  map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "completed"}, "description": "pending=未开始 / in_progress=进行中 / completed=已完成"},
+						},
+						"required": []string{"content", "status"},
+					},
+				},
+			},
+			Required: []string{"todos"},
+		},
+		// Executor 为 nil:在 agent/llm.go 工具循环里被拦截,转成 PlanCreatedMsg 更新 UI,
+		// 不走默认 Executor、不派子 agent。
+		Executor: nil,
+		ReadOnly: true,
+		// Roles 留空 = 所有角色可见;子 agent 由其系统提示词禁止使用(同 CreatePlan)。
+	},
 }

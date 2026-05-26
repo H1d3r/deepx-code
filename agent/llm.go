@@ -329,6 +329,11 @@ func coreSystemPrompt(workspace, skillCatalog string) string {
 # 技能skill使用
 - 在实现功能、修复 bug、重构或 review 代码之前，读取karpathy-guidelines，并遵照其规则执行。
 
+# 任务规划
+- 简单/单步任务:直接做,不要过度规划。
+- 多步顺序任务(≥3 步且有先后,如从零搭应用 / 跨多文件改动 / 调试修复链路):动手前先用 Todo 列出全部步骤,之后每开始或完成一步就重发整张 todos 更新状态,让用户看到进度。你自己逐步执行,不派子 agent。
+- 真正可并行、彼此独立的扇出任务才用 CreatePlan 拆 DAG(会派并发子 agent 各自跑);搭一个连贯的应用别用 CreatePlan。
+
 # Shell 安全
 - 不主动执行破坏性命令(rm -rf / drop / force push 等)
 - 优先可逆操作,destructive 操作先确认
@@ -479,8 +484,9 @@ func StartStream(
 			}
 
 			// 执行每个工具调用,把结果加进 convo。
-			// 三个工具被 deepx 拦截 (不走 Executor):
-			//   - CreatePlan         → 解析后产 PlanCreatedMsg,触发 DAG 调度
+			// 这些工具被 deepx 拦截 (不走 Executor):
+			//   - CreatePlan         → 解析后产 PlanCreatedMsg,触发 DAG 调度(派并发子 agent)
+			//   - Todo               → 解析后产 PlanCreatedMsg 刷新可见清单,主 agent 自己执行,不派子 agent
 			//   - UpdatePlanStatus   → 解析后产 TaskStatusMsg,UI 更新单项状态
 			//   - SwitchModel        → 改本轮 currentEntry / role,通过 ModelSwitchMsg 通知 UI
 			// 拦截后仍要给 LLM 一个 fake tool result,让 OpenAI 工具循环能正常推进。
@@ -553,6 +559,25 @@ func StartStream(
 						result = tools.ToolResult{
 							Output:  summary.String(),
 							Success: successCount > 0,
+						}
+					}
+				case "Todo":
+					// 主 agent 自驱动的可见待办清单:全量快照覆盖当前 planState,不派子 agent。
+					// 复用 PlanCreatedMsg 让 UI 直接按各项 status 渲染 checkbox。
+					items, perr := parseTodoArgs(tc.Function.Arguments)
+					if perr != nil {
+						result = tools.ToolResult{Output: perr.Error(), Success: false}
+					} else {
+						ch <- PlanCreatedMsg{Plans: items}
+						done := 0
+						for _, it := range items {
+							if it.Status == PlanStatusDone {
+								done++
+							}
+						}
+						result = tools.ToolResult{
+							Output:  fmt.Sprintf("待办已更新:%d/%d 完成。继续按清单执行,每开始/完成一步就重发整张 todos 更新状态。", done, len(items)),
+							Success: true,
 						}
 					}
 				case "UpdatePlanStatus":

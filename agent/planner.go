@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // PlanStatus 是 plan/task 在生命周期里的状态。UI 用 statusIcon 渲染成符号。
@@ -64,6 +65,57 @@ func parseCreatePlanArgs(rawArgs string) ([]PlanItem, error) {
 		wrapper.Plans[i].Status = PlanStatusPending
 	}
 	return wrapper.Plans, nil
+}
+
+// parseTodoArgs 把主 agent 调用 Todo 工具的全量快照解成 []PlanItem。
+// 每次调用都是完整清单(非增量),状态嵌在各项里;ID 自动按序号生成(纯展示用,不参与调度)。
+func parseTodoArgs(rawArgs string) ([]PlanItem, error) {
+	var w struct {
+		Todos []struct {
+			Content string `json:"content"`
+			Title   string `json:"title"` // 容错:模型偶尔用 title 代替 content
+			Status  string `json:"status"`
+		} `json:"todos"`
+	}
+	if rawArgs == "" || rawArgs == "null" {
+		return nil, fmt.Errorf("Todo: 空参数")
+	}
+	if err := json.Unmarshal([]byte(rawArgs), &w); err != nil {
+		return nil, fmt.Errorf("Todo: 参数解析失败: %w", err)
+	}
+	if len(w.Todos) == 0 {
+		return nil, fmt.Errorf("Todo: todos 数组为空")
+	}
+	items := make([]PlanItem, len(w.Todos))
+	for i, t := range w.Todos {
+		title := t.Content
+		if title == "" {
+			title = t.Title
+		}
+		items[i] = PlanItem{
+			ID:     fmt.Sprintf("todo%d", i+1),
+			Title:  title,
+			Status: normalizeTodoStatus(t.Status),
+		}
+	}
+	return items, nil
+}
+
+// normalizeTodoStatus 把 Todo 工具的状态词(TodoWrite 习惯用 pending/in_progress/completed)
+// 映射到 deepx 内部的 PlanStatus,同时容忍 running/done 等同义写法。
+func normalizeTodoStatus(s string) PlanStatus {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "in_progress", "in-progress", "running", "active", "doing":
+		return PlanStatusRunning
+	case "completed", "complete", "done", "finished":
+		return PlanStatusDone
+	case "failed", "error":
+		return PlanStatusFailed
+	case "blocked", "skipped", "cancelled", "canceled":
+		return PlanStatusBlocked
+	default:
+		return PlanStatusPending
+	}
 }
 
 // parseUpdatePlanStatusArgs 把 UpdatePlanStatus 的参数解出来。
