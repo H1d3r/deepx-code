@@ -429,7 +429,7 @@ func StartStream(
 		}
 		ch <- ModelSwitchMsg{Role: role, ModelID: currentEntry.Model}
 
-		toolSpecs := buildToolSpecs(mode, role)
+		toolSpecs := buildToolSpecs(mode)
 
 		// 发出本轮"实际发送"的前缀快照(system 文本 + tool specs JSON),供 TUI 持久化:
 		// 重启变化检测 + 缓存友好压缩复刻旧前缀。tool specs 随 mode/role 变,故必须存实际值。
@@ -608,7 +608,7 @@ func StartStream(
 					} else {
 						role = tools.RolePro
 						currentEntry = models.Pro
-						toolSpecs = buildToolSpecs(mode, role) // 角色切换后工具白名单可能变,重算
+						// 工具表不随角色变(各角色一致),无需重算 toolSpecs。
 						ch <- ModelSwitchMsg{Role: role, ModelID: currentEntry.Model, Reason: reason}
 						result = tools.ToolResult{
 							Output:  fmt.Sprintf("已切到 pro 模型 (%s)。本轮剩余请求 + reasoning 用 pro 处理。", currentEntry.Model),
@@ -616,7 +616,7 @@ func StartStream(
 						}
 					}
 				default:
-					result = executeTool(tc, mode, role)
+					result = executeTool(tc, mode)
 				}
 
 				ch <- ToolCallResultMsg{
@@ -767,14 +767,12 @@ func ListenToStream(ch <-chan tea.Msg) tea.Cmd {
 
 // === 工具白名单 / 执行 ===
 
-// buildToolSpecs 按权限模式 (plan/auto) + 当前模型角色 (flash/pro/subagent) 过滤工具列表。
-func buildToolSpecs(mode AgentMode, role string) []tools.OpenAIToolSpec {
+// buildToolSpecs 组装本轮工具列表。当前所有模式 / 角色拿到的工具表一致(模式与角色限制都靠
+// system prompt + executeTool 兜底,不在这里裁剪),这样前缀缓存稳定。
+func buildToolSpecs(mode AgentMode) []tools.OpenAIToolSpec {
 	var out []tools.OpenAIToolSpec
 	for _, t := range tools.Tools {
 		if !allowedInMode(t, mode) {
-			continue
-		}
-		if !allowedForRole(t, role) {
 			continue
 		}
 		out = append(out, t.ToOpenAISpec())
@@ -794,25 +792,12 @@ func allowedInMode(_ tools.Tool, _ AgentMode) bool {
 	return true
 }
 
-// allowedForRole 检查工具的 Roles 限制。Roles 为空表示对所有角色可见。
-func allowedForRole(t tools.Tool, role string) bool {
-	if len(t.Roles) == 0 {
-		return true
-	}
-	for _, r := range t.Roles {
-		if r == role {
-			return true
-		}
-	}
-	return false
-}
-
 // isReviewable 判断工具在 review 模式下是否需要人工审核。
 func isReviewable(name string) bool {
 	return name == "Write" || name == "Update" || name == "Bash"
 }
 
-func executeTool(tc ToolCall, mode AgentMode, role string) tools.ToolResult {
+func executeTool(tc ToolCall, mode AgentMode) tools.ToolResult {
 	t := tools.Find(tc.Function.Name)
 	if t == nil {
 		return tools.ToolResult{
@@ -823,12 +808,6 @@ func executeTool(tc ToolCall, mode AgentMode, role string) tools.ToolResult {
 	if !allowedInMode(*t, mode) {
 		return tools.ToolResult{
 			Output:  fmt.Sprintf("工具 %s 在当前模式 (%s) 不可用", t.Name, mode),
-			Success: false,
-		}
-	}
-	if !allowedForRole(*t, role) {
-		return tools.ToolResult{
-			Output:  fmt.Sprintf("工具 %s 对当前模型角色 (%s) 不可用", t.Name, role),
 			Success: false,
 		}
 	}
@@ -844,7 +823,7 @@ func executeTool(tc ToolCall, mode AgentMode, role string) tools.ToolResult {
 	// 退而返回失败给 LLM,让它自纠或交给上层重试,而不是 panic。
 	if t.Executor == nil {
 		return tools.ToolResult{
-			Output:  fmt.Sprintf("工具 %s 当前角色 (%s) 不能直接执行(应在 agent 循环内被拦截);请用别的工具完成此步骤", t.Name, role),
+			Output:  fmt.Sprintf("工具 %s 不能直接执行(应在 agent 循环内被拦截);请用别的工具完成此步骤", t.Name),
 			Success: false,
 		}
 	}

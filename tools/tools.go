@@ -2,11 +2,11 @@ package tools
 
 import "encoding/json"
 
-// 模型角色常量,Tool.Roles 字段使用。空列表 = 任何角色都能用。
+// 模型角色常量:标识本轮用 flash 还是 pro。仅用于入口路由、SwitchModel、以及 UI 的活动模型
+// 指示;不再用于工具可见性过滤(所有角色的工具表一致,保前缀缓存)。
 const (
-	RoleFlash    = "flash"    // 默认起手模型,便宜快
-	RolePro      = "pro"      // 升级后的强模型
-	RoleSubAgent = "subagent" // plan/task 执行用的子 agent
+	RoleFlash = "flash" // 默认起手模型,便宜快
+	RolePro   = "pro"   // 升级后的强模型
 )
 
 // Tool 工具定义
@@ -16,9 +16,6 @@ type Tool struct {
 	Parameters  ToolParam                            `json:"parameters"`
 	Executor    func(args map[string]any) ToolResult `json:"-"`
 	ReadOnly    bool                                 `json:"-"`
-	// Roles 限制本工具可见的模型角色。空 = 任何角色可见。
-	// 例如 UpdatePlanStatus 只对 subagent 可见,主对话不需要。
-	Roles []string `json:"-"`
 }
 
 // ToolParam 工具参数 schema（OpenAI function calling 格式）
@@ -382,9 +379,8 @@ var Tools = []Tool{
 		// 拦截后直接修改 agent 内部 currentEntry/role,通过 ModelSwitchMsg 通知 UI。
 		Executor: nil,
 		ReadOnly: true,
-		// Roles 留空 = 所有角色可见。pro 调用时拦截层会 no-op。
-		// 子 agent 不该看到本工具,但策略不在这里 — 由 agent/subagent.go 的
-		// subAgentToolDenylist 集中管理(跟 subagent system prompt 同地)。
+		// pro 调用时拦截层会 no-op。子 agent 不该用本工具,但不按角色隐藏(各角色工具表一致、保前缀缓存):
+		// 靠子 agent 系统提示词禁止 + Executor 为 nil 的纵深防护兜底(真调了也只返回失败,不生效)。见 subagent.go。
 	},
 	{
 		Name: "CreatePlan",
@@ -419,10 +415,10 @@ var Tools = []Tool{
 		},
 		Executor: CreatePlan,
 		ReadOnly: true, // 仅做规划登记,不动文件
-		// Roles 留空 = 所有角色可见。
 		// 入口由 keyword router 路由,模型自行判断要不要拆 plan;
 		// flash 起手时也允许它把复杂任务拆成 DAG(其中可指定 pro 节点跑深度部分)。
-		// 子 agent 不该看到本工具(防递归 + 行为不完整),策略在 subAgentToolDenylist 集中管。
+		// 子 agent 不该用本工具(防递归),但不按角色隐藏(各角色工具表一致、保前缀缓存):靠系统提示词禁止 +
+		// Executor 为 nil 兜底(同 Todo / SwitchModel)。见 subagent.go。
 	},
 	{
 		Name: "UpdatePlanStatus",
@@ -439,9 +435,9 @@ var Tools = []Tool{
 		},
 		Executor: UpdatePlanStatus,
 		ReadOnly: true,
-		// 只对子 agent 暴露。主对话里的 pro 在调用 CreatePlan 后 DAG 自动驱动状态,
-		// 不需要 pro 显式更新;子 agent 偶尔需要写中间状态(实际被吞,以 scheduler 为准)。
-		Roles: []string{RoleSubAgent},
+		// 主要给 CreatePlan 拆出的 DAG 子 agent 写中间状态(实际被吞,以 scheduler 为准)。
+		// 主对话用 Todo 维护可见清单、不靠它;但不再按角色隐藏(各角色工具表一致,保前缀缓存),
+		// 主 agent 真调了也只是发一条 TaskStatusMsg,apply 找不到 id 会静默忽略,无害。
 	},
 	{
 		Name: "Todo",

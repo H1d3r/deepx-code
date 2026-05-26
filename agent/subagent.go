@@ -9,13 +9,14 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// buildSubAgentToolSpecs 子 agent 工具集 = 按 RoleSubAgent 过滤的工具,与主 agent 保持一致的口径。
+// buildSubAgentToolSpecs 子 agent 工具集。已不再按角色过滤工具,所以跟主 agent 的工具表
+// 逐字节一致 —— 刻意如此,保前缀缓存(别为了"藏工具"去按角色裁,裁了工具表分叉就 cache miss)。
 //
-// 不再硬过滤 CreatePlan / SwitchModel:改为靠子 agent 系统提示词明确"禁止 CreatePlan / SwitchModel"
-// 来约束(见 runSubAgent 的尾部)。即使模型不听话调了,这两个工具的 Executor 为 nil,
-// executeTool 有纵深防护(返回失败而非 panic),所以安全。
+// CreatePlan / Todo / SwitchModel 子 agent 不该用,靠两层兜底(没有 subAgentToolDenylist 那种硬过滤,别去找):
+//  1. runSubAgent 尾部系统提示词明确禁止 CreatePlan / Todo / SwitchModel;
+//  2. 它们 Executor 为 nil,子 agent 走 executeTool 时纵深防护返回失败(不 panic、不生效)。
 func buildSubAgentToolSpecs(mode AgentMode) []tools.OpenAIToolSpec {
-	return buildToolSpecs(mode, tools.RoleSubAgent)
+	return buildToolSpecs(mode)
 }
 
 // subAgentInput 是一次子 agent 调用的全部依赖。
@@ -64,7 +65,7 @@ func estimateConvoTokens(convo []ChatMessage) int {
 //
 // 行为:
 //   - 独立 history,只含 system prompt + 用户原始任务 + 节点 title
-//   - 工具白名单按 RoleSubAgent 过滤 (看不到 CreatePlan,避免递归 plan)
+//   - 工具表与主 agent 一致;不该用的 CreatePlan/Todo/SwitchModel 靠系统提示词禁止 + nil-Executor 兜底(见 buildSubAgentToolSpecs)
 //   - UpdatePlanStatus 调用被吞掉,scheduler 才是状态真实来源
 //   - 不向 TUI 发 TokenMsg / ToolCallStartMsg 等可见事件,子 agent 中间过程完全隐藏
 //   - 最终 assistant content 作为 Summary 返回;失败 → Err
@@ -168,7 +169,7 @@ func runSubAgent(ctx context.Context, in subAgentInput) subAgentResult {
 				// (只用 Output 拼 tool 消息,Success 不读,故不设)
 				result = tools.ToolResult{Output: "已记录"}
 			default:
-				result = executeTool(tc, in.Mode, tools.RoleSubAgent)
+				result = executeTool(tc, in.Mode)
 			}
 			convo = append(convo, ChatMessage{
 				Role:       "tool",
