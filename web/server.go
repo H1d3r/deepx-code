@@ -22,6 +22,10 @@ type Server struct {
 	// 回调:浏览器提交输入 / review 确认时触发。由调用方注入。
 	OnInput  func(text string)
 	OnReview func(approve bool)
+
+	// OnListFiles 返回工作区文件相对路径列表,供前端 @ 文件选择器使用。由调用方注入
+	// (web 包不能依赖 tui —— tui 已依赖 web,会成环;遍历逻辑在 tui 侧,经回调注入)。
+	OnListFiles func() []string
 }
 
 // NewServer 创建 Server,token 随机生成。
@@ -48,6 +52,7 @@ func (s *Server) Serve() error {
 	mux.HandleFunc("/api/input", s.handleInput)
 	mux.HandleFunc("/api/review", s.handleReview)
 	mux.HandleFunc("/api/state", s.handleState)
+	mux.HandleFunc("/api/files", s.handleFiles)
 	s.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	err := s.srv.Serve(s.ln)
 	if err == http.ErrServerClosed {
@@ -192,4 +197,21 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(s.hub.SnapshotCopy())
+}
+
+// handleFiles 返回工作区文件相对路径列表(JSON 数组),供前端 @ 文件选择器过滤。
+func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
+	if !s.authed(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var files []string
+	if s.OnListFiles != nil {
+		files = s.OnListFiles()
+	}
+	if files == nil {
+		files = []string{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(files)
 }

@@ -34,10 +34,20 @@
         </div>
 
         <form class="composer" @submit.prevent="send">
+          <ul v-if="mention.active && mentionMatches.length" class="mention-pop">
+            <li v-for="(f, i) in mentionMatches" :key="f"
+                :class="{ sel: i === mention.idx }"
+                @mousedown.prevent="mentionPick(i, true)"
+                @mousemove="mention.idx = i">{{ f }}</li>
+          </ul>
           <textarea
             v-model="input"
             :placeholder="streaming ? t('placeholder.streaming') : t('placeholder.idle')"
             @keydown="onKey"
+            @input="onInput"
+            @keyup="syncMention"
+            @click="syncMention"
+            @blur="mention.active = false"
             rows="1"
             ref="ta"></textarea>
           <button type="submit" :disabled="!input.trim()">{{ t('send') }}</button>

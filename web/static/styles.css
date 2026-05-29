@@ -88,7 +88,20 @@ body {
 @keyframes blink { 0%, 60%, 100% { opacity: .3; } 30% { opacity: 1; } }
 
 /* 输入区 */
-.composer { display: flex; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--border); background: var(--bg2); }
+.composer { position: relative; display: flex; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--border); background: var(--bg2); }
+
+/* @ 文件选择器:浮在输入框上方 */
+.mention-pop {
+  position: absolute; left: 20px; right: 20px; bottom: 100%; margin: 0 0 6px;
+  list-style: none; padding: 4px; max-height: 220px; overflow-y: auto;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .35); z-index: 20;
+}
+.mention-pop li {
+  padding: 5px 10px; border-radius: 6px; cursor: pointer;
+  font-size: 13px; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mention-pop li.sel { background: var(--accent2); color: #fff; }
 .composer textarea {
   flex: 1; resize: none; background: var(--bg); color: var(--fg);
   border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;

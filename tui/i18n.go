@@ -127,6 +127,8 @@ var translations = map[string]map[Lang]string{
 			"- `/lang` — 切换语言 (中/英)\n" +
 			"- `/compact` — 手动压缩会话历史(保留尾部 20%)\n" +
 			"- `/help` — 帮助\n\n" +
+			"**输入**\n\n" +
+			"- `@` — 引用文件(弹出文件选择器,选中后插入路径,模型按需读取)\n\n" +
 			"**快捷键**\n\n" +
 			"- `Enter` — 发送\n" +
 			"- `Ctrl+Shift+A` / macOS `Cmd+Shift+A` — 输入框全选\n" +
@@ -144,6 +146,8 @@ var translations = map[string]map[Lang]string{
 			"- `/lang` — Switch language (zh/en)\n" +
 			"- `/compact` — Manually compact session history (keep last 20%)\n" +
 			"- `/help` — Help\n\n" +
+			"**Input**\n\n" +
+			"- `@` — Reference a file (opens a picker; inserts the path for the model to read)\n\n" +
 			"**Keybindings**\n\n" +
 			"- `Enter` — Send\n" +
 			"- `Ctrl+Shift+A` / macOS `Cmd+Shift+A` — Select all in input\n" +

@@ -67,6 +67,10 @@ createApp({
       connected: false,
       openIdx: -1, // 当前流式 assistant 消息下标
       lang: 'zh',  // 跟 TUI 同步
+      // @ 文件提及选择器
+      mention: { active: false, idx: 0, query: '', start: 0, end: 0, hidden: false },
+      mentionFiles: [],       // /api/files 拉到的工作区文件列表(懒加载、缓存)
+      mentionFilesLoaded: false,
     };
   },
   computed: {
@@ -81,6 +85,11 @@ createApp({
       const hit = this.usage.cacheHit;
       const prompt = this.usage.promptTokens;
       return Math.floor((hit * 100) / prompt) + '% (' + hit + '/' + prompt + ')';
+    },
+    // @ 选择器当前候选(按 query 过滤,最多 10 条),跟 TUI filterWorkspaceFiles 同口径。
+    mentionMatches() {
+      if (!this.mention.active) return [];
+      return this.filterFiles(this.mention.query, this.mentionFiles, 10);
     },
   },
   methods: {
@@ -133,15 +142,109 @@ createApp({
       });
     },
     onKey(e) {
+      // @ 选择器激活时,方向键 / Tab / Enter / Esc 优先给选择器,不触发发送 / 换行。
+      if (this.mention.active && this.mentionMatches.length) {
+        if (e.key === 'ArrowDown') { e.preventDefault(); this.mentionMove(1); return; }
+        if (e.key === 'ArrowUp') { e.preventDefault(); this.mentionMove(-1); return; }
+        // Enter = 确认并关闭(文件 / 目录都选定);Tab = 对目录下钻(留在打开态)
+        if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); this.mentionPick(this.mention.idx, true); return; }
+        if (e.key === 'Tab') { e.preventDefault(); this.mentionPick(this.mention.idx, false); return; }
+        if (e.key === 'Escape') {
+          e.preventDefault(); this.mention.hidden = true; this.mention.active = false; return;
+        }
+      }
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
         this.send();
       }
     },
+
+    // === @ 文件提及 ===
+
+    // mentionContext 从光标往回扫,定位正在输入的 "@query"(镜像 TUI fileMentionContext)。
+    // @ 须在串首或紧跟空白(避免 user@host 邮箱误判),且 @ 到光标间无空白。
+    mentionContext(value, cursor) {
+      for (let i = cursor - 1; i >= 0; i--) {
+        const ch = value[i];
+        if (ch === '@') {
+          const prev = i > 0 ? value[i - 1] : '';
+          if (i === 0 || /\s/.test(prev)) {
+            return { active: true, start: i, end: cursor, query: value.slice(i + 1, cursor) };
+          }
+          return { active: false };
+        }
+        if (/\s/.test(ch)) return { active: false };
+      }
+      return { active: false };
+    },
+    filterFiles(query, files, limit) {
+      const q = (query || '').toLowerCase();
+      const pref = [], sub = [];
+      for (const f of files) {
+        const lf = f.toLowerCase();
+        const base = (lf.endsWith('/') ? lf.slice(0, -1) : lf).split('/').pop();
+        if (!q || lf.startsWith(q) || base.startsWith(q)) pref.push(f);
+        else if (lf.includes(q)) sub.push(f);
+      }
+      return pref.concat(sub).slice(0, limit);
+    },
+    async ensureFiles() {
+      if (this.mentionFilesLoaded) return;
+      this.mentionFilesLoaded = true;
+      try {
+        const r = await fetch('/api/files');
+        if (r.ok) this.mentionFiles = await r.json();
+      } catch (_) { /* 拉不到就空列表,选择器不显示 */ }
+    },
+    // syncMention 据输入框当前值 + 光标重算提及态。keyup / input / click 时调用。
+    onInput() { this.mention.hidden = false; this.syncMention(); },
+    syncMention() {
+      const ta = this.$refs.ta;
+      if (!ta) return;
+      const ctx = this.mentionContext(this.input, ta.selectionStart);
+      if (!ctx.active || this.mention.hidden || this.input.startsWith('/')) {
+        this.mention.active = false;
+        return;
+      }
+      this.ensureFiles();
+      this.mention.start = ctx.start;
+      this.mention.end = ctx.end;
+      this.mention.query = ctx.query;
+      this.mention.active = true;
+      const n = this.mentionMatches.length;
+      if (this.mention.idx >= n) this.mention.idx = Math.max(0, n - 1);
+      if (this.mention.idx < 0) this.mention.idx = 0;
+    },
+    mentionMove(d) {
+      const n = this.mentionMatches.length;
+      if (!n) return;
+      this.mention.idx = Math.min(n - 1, Math.max(0, this.mention.idx + d));
+    },
+    // mentionPick 把光标处的 "@query" 替换成 "@<相对路径>"。
+    //   - commit=true(Enter / 点击):文件 / 目录都补尾随空格并关闭选择器(确认选定)
+    //   - commit=false(Tab):目录不补空格、留在打开态继续下钻;文件仍补空格关闭
+    // 点击走 commit —— 点哪个选哪个,符合下拉直觉;目录下钻是键盘 Tab 的高级用法(或直接打字 narrow)。
+    mentionPick(i, commit) {
+      const matches = this.mentionMatches;
+      if (!matches.length) return;
+      const idx = (typeof i === 'number') ? i : this.mention.idx;
+      const chosen = matches[idx];
+      const drill = !commit && chosen.endsWith('/');
+      const insert = '@' + chosen + (drill ? '' : ' ');
+      this.input = this.input.slice(0, this.mention.start) + insert + this.input.slice(this.mention.end);
+      const caret = this.mention.start + insert.length;
+      this.mention.idx = 0;
+      if (!drill) this.mention.active = false;
+      this.$nextTick(() => {
+        const ta = this.$refs.ta;
+        if (ta) { ta.focus(); ta.setSelectionRange(caret, caret); if (drill) this.syncMention(); }
+      });
+    },
     async send() {
       const text = this.input.trim();
       if (!text) return;
       this.input = '';
+      this.mention.active = false;
       await fetch('/api/input', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

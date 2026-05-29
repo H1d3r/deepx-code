@@ -45,6 +45,10 @@ func Run(models agent.ModelConfig, needsSetup bool, version string, webEnabled b
 		// 浏览器输入 / review 确认 → program.Send 注入,走和终端完全相同的 Update 逻辑。
 		srv.OnInput = func(text string) { p.Send(webInputMsg{text: text}) }
 		srv.OnReview = func(approve bool) { p.Send(webReviewMsg{approve: approve}) }
+		srv.OnListFiles = func() []string {
+			wd, _ := os.Getwd()
+			return listWorkspaceFiles(wd)
+		}
 		go func() { _ = srv.Serve() }()
 		defer srv.Close()
 	}

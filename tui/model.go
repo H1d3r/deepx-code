@@ -109,6 +109,11 @@ type model struct {
 	// 实时计算,避免状态同步问题。idx 越界时(value 一变 matches 变短)由消费方 clamp。
 	commandPaletteIdx int
 
+	// @ 文件提及选择器:选中索引 + 文件列表缓存。提及态由 fileMentionContext(input value, 光标)
+	// 实时算;cache 在提及激活时懒构建、退出时清空(每次新 @ 会重新遍历,保证拾取新文件)。
+	fileMentionIdx   int
+	fileMentionCache []string
+
 	// lastInputClickAt 记录最近一次落在输入框那一行的左键 click 时间戳。
 	// 用来手动检测双击:两次 click 间隔 < 400ms 即视为双击,切换 inputAllSelected。
 	// bubbletea v2 的 MouseClickMsg 不带 Clicks 计数,只能自己算。
@@ -1022,6 +1027,48 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.commandPaletteIdx = 0
 		}
 
+		// @ 文件提及选择器导航键拦截。与 / palette 互斥(/ 起手的情况已在上面消费过导航键)。
+		// 提及态由光标处的 "@query" 片段决定;cache 由下方 syncFileMention 在提及激活时构建。
+		if start, end, query, active := fileMentionContext(m.input.Value(), m.input.Line(), m.input.Column()); active && !strings.HasPrefix(m.input.Value(), "/") {
+			matches := filterWorkspaceFiles(query, m.fileMentionCache, fileMentionMaxRows)
+			if len(matches) > 0 {
+				if m.fileMentionIdx >= len(matches) {
+					m.fileMentionIdx = len(matches) - 1
+				}
+				if m.fileMentionIdx < 0 {
+					m.fileMentionIdx = 0
+				}
+				switch msg.String() {
+				case "up":
+					if m.fileMentionIdx > 0 {
+						m.fileMentionIdx--
+					}
+					return m, nil
+				case "down":
+					if m.fileMentionIdx < len(matches)-1 {
+						m.fileMentionIdx++
+					}
+					return m, nil
+				case "tab", "enter":
+					// 用选中路径替换光标处的 "@query" 为 "@<相对路径>"。分工对齐 / palette:
+					//   - Enter = 确认选择并关闭(总补尾随空格,文件 / 目录都直接选定)
+					//   - Tab   = 对目录"下钻"(不补空格、留在提及态继续筛子路径);对文件等同 Enter
+					// 与 / palette 的 Tab 同样用 SetValue + CursorEnd —— 光标落末尾,提及在句中时
+					// 光标不在插入点是已知小瑕疵,常见的"句尾 @" 场景表现正确。
+					chosen := matches[m.fileMentionIdx]
+					suffix := " "
+					if msg.String() == "tab" && strings.HasSuffix(chosen, "/") {
+						suffix = "" // 仅 Tab 选目录才下钻
+					}
+					runes := []rune(m.input.Value())
+					m.input.SetValue(string(runes[:start]) + "@" + chosen + suffix + string(runes[end:]))
+					m.input.CursorEnd()
+					m.fileMentionIdx = 0
+					return m, nil
+				}
+			}
+		}
+
 		// Ctrl+A 全选态预处理:按下 Ctrl+A 后,任何其他按键都要先消费"全选"语义。
 		// 放在外层 switch 之前,确保所有后续 case 都看不到带 selected 的状态。
 		if m.inputAllSelected {
@@ -1485,6 +1532,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.input, inputCmd = m.input.Update(msg)
 	cmds = append(cmds, inputCmd)
 
+	// 输入框内容已更新,据新值同步 @ 文件提及选择器的缓存(激活时懒构建、退出时清空)。
+	m.syncFileMention()
+
 	// 用户敲键时强制 cursor 立刻亮,跟旧虚拟光标"打字 = 光标snappy显形"的手感一致。
 	// 下一拍 600ms tick 仍按既有节奏 toggle,不 reset 时钟。
 	if _, ok := msg.(tea.KeyPressMsg); ok {
@@ -1494,14 +1544,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// buildUserMessage 把输入文本中的 [Image #N] 占位符替换成已落盘的图片绝对路径,
-// 让不支持多模态输入的 LLM (例如 DeepSeek) 也能拿到图片信息——
-// 模型可通过 img_ocr 工具按路径识别图片内容。
+// syncFileMention 据当前输入值同步 @ 文件提及选择器状态:
+//   - 处于提及态且缓存为空 → 遍历 workspace 构建文件列表缓存
+//   - 退出提及态 → 清空缓存与选中索引(下次 @ 重新遍历,自动拾取新增文件)
+func (m *model) syncFileMention() {
+	_, _, _, active := fileMentionContext(m.input.Value(), m.input.Line(), m.input.Column())
+	if !active || strings.HasPrefix(m.input.Value(), "/") {
+		m.fileMentionCache = nil
+		m.fileMentionIdx = 0
+		return
+	}
+	if m.fileMentionCache == nil {
+		wd, err := os.Getwd()
+		if err == nil {
+			m.fileMentionCache = listWorkspaceFiles(wd)
+		}
+	}
+}
+
+// buildUserMessage 把输入文本中的占位符 / 引用替换成 LLM 可用的形式:
+//   - [Image #N] → 已落盘图片的绝对路径(模型用 img_ocr 按路径识别)
+//   - @相对路径   → 反引号包裹的相对路径(指向真实文件时;模型按需调 Read 读取,设计 B)
 //
-// 设计:图片在 Ctrl+V 时就落盘到 ~/.deepx/ocr/cache/<ts>-<N>.png,
-// 这里只做"占位符 → 路径"的文本替换,不再产出多模态 ContentParts。
-// 用户手动删掉的占位符对应的图片不会出现在最终消息里。
+// 图片在 Ctrl+V 时落盘到 ~/.deepx/ocr/cache/<ts>-<N>.png;这里只做文本替换,不产出多模态 ContentParts。
+// 聊天窗口仍显示用户原文(含 [Image #N] / @路径),替换只发生在发给 LLM 的消息体。
 func (m model) buildUserMessage(text string) agent.ChatMessage {
+	if wd, err := os.Getwd(); err == nil {
+		text = resolveFileMentions(text, wd)
+	}
 	if len(m.attachedImagePaths) == 0 {
 		return agent.ChatMessage{Role: "user", Content: text}
 	}

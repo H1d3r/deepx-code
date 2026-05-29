@@ -212,6 +212,24 @@ func (m model) View() tea.View {
 			startY = 0
 		}
 		mainUI = overlayAt(mainUI, palette, 0, startY)
+	} else if _, _, query, active := fileMentionContext(m.input.Value(), m.input.Line(), m.input.Column()); active && len(m.fileMentionCache) > 0 && !m.showSetup {
+		// @ 文件提及选择器:叠在输入框上方(与 / palette 同位,二者互斥)。
+		if matches := filterWorkspaceFiles(query, m.fileMentionCache, fileMentionMaxRows); len(matches) > 0 {
+			idx := m.fileMentionIdx
+			if idx >= len(matches) {
+				idx = len(matches) - 1
+			}
+			if idx < 0 {
+				idx = 0
+			}
+			palette := renderFileMentionPalette(matches, idx, leftW)
+			inputY := bodyH + inputTopPad
+			startY := inputY - len(matches)
+			if startY < 0 {
+				startY = 0
+			}
+			mainUI = overlayAt(mainUI, palette, 0, startY)
+		}
 	}
 
 	// modal 覆盖在主 UI 上居中显示。

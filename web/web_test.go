@@ -140,6 +140,46 @@ func TestServerAuthAndCallbacks(t *testing.T) {
 	}
 }
 
+// TestHandleFiles 验证 /api/files 鉴权 + OnListFiles 回调结果以 JSON 数组返回。
+func TestHandleFiles(t *testing.T) {
+	h := NewHub("flash", "pro", "/tmp/ws", "en")
+	srv := NewServer(h)
+	srv.OnListFiles = func() []string { return []string{"tui/model.go", "README.md"} }
+
+	rawURL, err := srv.Listen(0)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve() }()
+	defer srv.Close()
+
+	u, _ := url.Parse(rawURL)
+	base := "http://" + u.Host
+	token := u.Query().Get("t")
+
+	// 无 token → 403
+	resp, err := http.Get(base + "/api/files")
+	if err != nil {
+		t.Fatalf("get files no-token: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("no-token files want 403, got %d", resp.StatusCode)
+	}
+
+	// 带 token → 回调列表
+	resp, err = http.Get(base + "/api/files?t=" + token)
+	if err != nil {
+		t.Fatalf("get files: %v", err)
+	}
+	var files []string
+	_ = json.NewDecoder(resp.Body).Decode(&files)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || len(files) != 2 || files[0] != "tui/model.go" {
+		t.Fatalf("files want 200 + 2 entries, got %d %v", resp.StatusCode, files)
+	}
+}
+
 func readAllString(resp *http.Response) (string, error) {
 	var b bytes.Buffer
 	_, err := b.ReadFrom(resp.Body)
