@@ -4,6 +4,7 @@ import (
 	"deepx/agent"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -43,9 +44,10 @@ func padLinesToWidth(content string, w int) string {
 //   - macOS Terminal.app:不认 VS16 → WcWidth
 //   - VSCode 集成终端(xterm.js, 默认 unicodeVersion=6):同样不认 VS16,`🌤️` = 1 cell → WcWidth
 //   - iTerm2 / WezTerm / Kitty / Ghostty / Alacritty:认 VS16 → GraphemeWidth
+//   - Windows Terminal / 现代 conhost(Win10 1903+):认 VS16,emoji/符号渲染 2 cell → GraphemeWidth
 //
 // 启动时按 TERM_PROGRAM / 终端 env 变量选,匹配实际渲染行为,避免 divider 在含 emoji 的
-// 行被推偏。未知终端默认 WcWidth(更保守 — 多数终端不严格 honors VS16)。
+// 行被推偏。未知非 Windows 终端默认 WcWidth(更保守 — 多数终端不严格 honors VS16)。
 var widthFunc func(string) int = ansi.StringWidthWc
 
 func init() {
@@ -55,6 +57,8 @@ func init() {
 func detectWidthFunc() func(string) int {
 	switch os.Getenv("TERM_PROGRAM") {
 	case "Apple_Terminal", "vscode":
+		// VSCode 内置终端在 Windows 上也是 xterm.js(unicode v6),1 cell → WcWidth。
+		// 这个判断必须在 GOOS=windows 兜底之前,否则 Windows 上的 VSCode 终端会被误判。
 		return ansi.StringWidthWc
 	case "iTerm.app", "WezTerm", "ghostty":
 		return ansi.StringWidth // GraphemeWidth 口径,认 VS16
@@ -63,6 +67,12 @@ func detectWidthFunc() func(string) int {
 		return ansi.StringWidth
 	}
 	if os.Getenv("ALACRITTY_LOG") != "" || os.Getenv("ALACRITTY_WINDOW_ID") != "" {
+		return ansi.StringWidth
+	}
+	// Windows Terminal 设 WT_SESSION;它和现代 conhost(PowerShell / cmd 默认宿主,
+	// Win10 1903+)都 honor VS16,把插了 VS16 的图标(🔍 🐚 ⚙ ✅ 等)渲染成 2 cell。
+	// 默认 WcWidth 会把这些算 1 cell → 那行被低估 1 列 → 右栏 divider 被顶偏。
+	if runtime.GOOS == "windows" || os.Getenv("WT_SESSION") != "" {
 		return ansi.StringWidth
 	}
 	return ansi.StringWidthWc
@@ -96,6 +106,18 @@ func lineDisplayWidth(s string) int {
 // 覆盖最常见的 Unicode emoji block,不追求 100% Extended_Pictographic 精确(需 uniseg 依赖)。
 // 漏判个别罕见 emoji 顶多那一行还抖一下,不会引入错误行为。
 func isEmojiLike(r rune) bool {
+	// 先剔除落在下面 emoji 块里、但其实没有 emoji 变体序列的纯文字 dingbat。给它们塞 VS16
+	// 是错的:VS16-honoring 终端(Windows Terminal 等)可能仍按文字渲染 1 cell,而 GraphemeWidth
+	// 会算 2 → 那行被高估、divider 反向偏。覆盖 LLM 高频输出的对勾/叉,以及装饰括号。
+	// 注意别误伤真 emoji:✔️(2714) / ✖️(2716) / ✡️(2721) 有 emoji 变体序列,不在此列。
+	switch {
+	case r == 0x2713 || r == 0x2715 || r == 0x2717 || r == 0x2718:
+		// ✓ ✕ ✗ ✘:CHECK MARK / 各式 X,均无 emoji presentation
+		return false
+	case r >= 0x2768 && r <= 0x2775:
+		// ❨ … ❵:中号 / 装饰括号(含输入提示符 ❱ U+2771),非 emoji
+		return false
+	}
 	switch {
 	case r >= 0x1F000 && r <= 0x1FFFF:
 		// misc symbols & pictographs / emoticons / transport / supplemental symbols 等
