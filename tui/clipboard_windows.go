@@ -14,6 +14,9 @@ import (
 	"unsafe"
 )
 
+// clipboardTextHint 在 Windows 上恒为空 —— user32 syscall 直读剪贴板,不依赖外部二进制。
+func clipboardTextHint() string { return "" }
+
 const cfDIB = 8
 
 var (

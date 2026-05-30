@@ -8,6 +8,9 @@ import (
 	"os/exec"
 )
 
+// clipboardTextHint 在 macOS 上恒为空 —— pbcopy/pbpaste 是系统自带,不可能缺。
+func clipboardTextHint() string { return "" }
+
 // readClipboardImage 通过 osascript 把剪贴板中的 «class PNGf» 写到临时文件再读回。
 // macOS 没有 cgo-free 的官方剪贴板二进制 API,osascript 是最干净的内置方案。
 // 剪贴板没有图片时 osascript 退出码非零,统一映射为 errNoClipboardImage。

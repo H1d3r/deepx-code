@@ -477,6 +477,13 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 		m.appendChat("System", fmt.Sprintf(T("web.ready"), webURL))
 	}
 
+	// 剪贴板工具检测:Linux 上没装 wl-clipboard / xclip / xsel 时 Ctrl+V 文本粘贴会静默
+	// 失败(atotto/clipboard 找不到二进制就返错,bubbles textarea 啥也不做),用户调一天
+	// 也猜不到根因。启动直接告诉他怎么装(macOS / Windows 系统自带,各自的 hint 返空)。
+	if hint := clipboardTextHint(); hint != "" {
+		m.appendChat("System", hint)
+	}
+
 	// 重启检测:若 prompt/工具/mcp 相对上次会话变了、历史又够大,标记需在首请求前压缩
 	//(此刻前缀已失效,趁机压缩,且复刻旧前缀命中热缓存 —— 见 prefix_cache.go)。
 	m.detectRestartCompaction()
