@@ -159,6 +159,14 @@ func (c *Client) Close() {
 
 // ============ stdio transport ============
 
+// writeReq 让 sendPayload 把"写一次 JSON"的工作交给专用 writer goroutine。
+// 用 channel 模式而非 mutex 是因为:mutex 一旦被卡死 enc.Encode 持有,所有等待者全堵在 Lock 上;
+// 用 channel 则可以在提交端用 select+timeout 跳出来,把"无法写入"转成可观察的错误。
+type writeReq struct {
+	payload any
+	done    chan error
+}
+
 type stdioTransport struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
@@ -168,6 +176,12 @@ type stdioTransport struct {
 	nextID  int64
 	pending map[int64]chan rpcResponse
 	closed  bool
+
+	// writeCh:所有写入串行化经由此 channel,由 writerLoop 唯一消费者执行 enc.Encode。
+	// 这样持锁的不是写 stdin 的同一个 goroutine,提交方可超时跳出,避免全员阻塞。
+	writeCh chan writeReq
+	// stopCh:close() 触发时关闭,通知 writerLoop 退出、唤醒所有阻塞在 sendPayload 上的调用方。
+	stopCh chan struct{}
 }
 
 func newStdioTransport(command string, args []string, env map[string]string) (*stdioTransport, error) {
@@ -190,9 +204,79 @@ func newStdioTransport(command string, args []string, env map[string]string) (*s
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("启动 MCP server 失败: %w", err)
 	}
-	t := &stdioTransport{cmd: cmd, stdin: stdin, enc: json.NewEncoder(stdin), pending: map[int64]chan rpcResponse{}}
+	t := &stdioTransport{
+		cmd:     cmd,
+		stdin:   stdin,
+		enc:     json.NewEncoder(stdin),
+		pending: map[int64]chan rpcResponse{},
+		writeCh: make(chan writeReq, 32),
+		stopCh:  make(chan struct{}),
+	}
+	go t.writerLoop()
 	go t.readLoop(stdout)
 	return t, nil
+}
+
+// writeTimeout 是 stdin 写入(包括"提交到写队列"和"实际 enc.Encode 完成")两段各自的预算。
+// 5s 留得宽,但远低于 requestTimeout(30s)—— 写阻塞通常意味着对端进程死锁,30s 太久;
+// 5s 就把死锁断开,避免后续所有 MCP 调用全卡同一个 transport。
+//
+// var 而非 const:测试时可调小到 100ms 量级,避免单测真等 5 秒。
+var writeTimeout = 5 * time.Second
+
+// writerLoop 是 stdio transport 唯一执行 enc.Encode 的 goroutine。
+// 串行化写入(json.Encoder 并发不安全),同时让"卡在 enc.Encode 上"只阻塞自己,
+// 调用方走 sendPayload 的 select+timeout 跳出,不会被锁住。
+func (t *stdioTransport) writerLoop() {
+	for {
+		select {
+		case <-t.stopCh:
+			return
+		case req := <-t.writeCh:
+			req.done <- t.enc.Encode(req.payload)
+		}
+	}
+}
+
+// sendPayload 把"写一次 JSON"提交给 writerLoop,双段超时保护:
+//  1. 入队超时(writeCh 满 = writer 在跑 encode 没空 + 队列堆满)→ server 大概率死锁,强制 close 连接
+//  2. 写完超时(writerLoop 在 enc.Encode 卡了)→ 同上,强制 close
+//
+// close 后所有 pending 调用通过 stopCh 同步返回错误,后续新调用也立刻拿"连接已关闭"。
+// 这就把"一个工具死锁让全 MCP 卡死"的故障收敛为"那一次返错,后续路径仍清晰"。
+func (t *stdioTransport) sendPayload(payload any) error {
+	t.mu.Lock()
+	if t.closed {
+		t.mu.Unlock()
+		return fmt.Errorf("MCP 连接已关闭")
+	}
+	t.mu.Unlock()
+
+	done := make(chan error, 1)
+	req := writeReq{payload: payload, done: done}
+
+	// 段 1:入队
+	select {
+	case t.writeCh <- req:
+	case <-t.stopCh:
+		return fmt.Errorf("MCP 连接已关闭")
+	case <-time.After(writeTimeout):
+		go t.close()
+		return fmt.Errorf("MCP 写入队列阻塞超时(%s),server 可能死锁,连接已断开", writeTimeout)
+	}
+
+	// 段 2:等 enc.Encode 完成
+	select {
+	case err := <-done:
+		return err
+	case <-t.stopCh:
+		return fmt.Errorf("MCP 连接已关闭")
+	case <-time.After(writeTimeout):
+		// writerLoop 卡在 enc.Encode → stdin pipe buffer 满 → 对端死锁不读。
+		// 异步触发 close(里面会 stdin.Close,释放卡住的 enc.Encode)
+		go t.close()
+		return fmt.Errorf("MCP 写入 stdin 超时(%s),server 死锁,连接已断开", writeTimeout)
+	}
 }
 
 func (t *stdioTransport) call(method string, params any) (json.RawMessage, error) {
@@ -205,14 +289,17 @@ func (t *stdioTransport) call(method string, params any) (json.RawMessage, error
 	id := t.nextID
 	ch := make(chan rpcResponse, 1)
 	t.pending[id] = ch
-	err := t.enc.Encode(rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params})
 	t.mu.Unlock()
-	if err != nil {
+
+	if err := t.sendPayload(rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params}); err != nil {
 		t.mu.Lock()
-		delete(t.pending, id)
+		if t.pending != nil {
+			delete(t.pending, id)
+		}
 		t.mu.Unlock()
 		return nil, err
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 	select {
@@ -226,19 +313,18 @@ func (t *stdioTransport) call(method string, params any) (json.RawMessage, error
 		return resp.Result, nil
 	case <-ctx.Done():
 		t.mu.Lock()
-		delete(t.pending, id)
+		if t.pending != nil {
+			delete(t.pending, id)
+		}
 		t.mu.Unlock()
 		return nil, fmt.Errorf("MCP 请求超时(%s)", method)
+	case <-t.stopCh:
+		return nil, fmt.Errorf("MCP 连接已关闭")
 	}
 }
 
 func (t *stdioTransport) notify(method string, params any) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.closed {
-		return fmt.Errorf("MCP 连接已关闭")
-	}
-	return t.enc.Encode(rpcNotification{JSONRPC: "2.0", Method: method, Params: params})
+	return t.sendPayload(rpcNotification{JSONRPC: "2.0", Method: method, Params: params})
 }
 
 func (t *stdioTransport) close() {
@@ -253,7 +339,8 @@ func (t *stdioTransport) close() {
 	}
 	t.pending = nil
 	t.mu.Unlock()
-	_ = t.stdin.Close()
+	close(t.stopCh)     // 通知 writerLoop 退出 + 唤醒所有阻塞在 sendPayload 上的调用方
+	_ = t.stdin.Close() // 关 stdin 让 writerLoop 卡在的 enc.Encode 返回 EPIPE,goroutine 不漏
 	if t.cmd.Process != nil {
 		_ = t.cmd.Process.Kill()
 	}
