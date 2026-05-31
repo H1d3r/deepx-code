@@ -89,6 +89,14 @@ var translations = map[string]map[Lang]string{
 		LangZH: "列出可用 skill",
 		LangEN: "List available skills",
 	},
+	"cmd.skill-add.desc": {
+		LangZH: "搜 Clawhub 装 skill(也可粘 GitHub URL,含 /tree/<branch>/<dir> 子目录形式)",
+		LangEN: "Search Clawhub & install (or paste GitHub URL, incl. /tree/<branch>/<dir> form)",
+	},
+	"cmd.skill-delete.desc": {
+		LangZH: "删除 ~/.deepx/skills/ 下的 skill(弹窗)",
+		LangEN: "Delete a skill from ~/.deepx/skills/ (popup)",
+	},
 	"cmd.mcp-list.desc": {
 		LangZH: "列出 MCP server 及状态",
 		LangEN: "List MCP servers & status",
@@ -123,6 +131,7 @@ var translations = map[string]map[Lang]string{
 			"- `/mode` — 显示当前模式\n" +
 			"- `/config` — 重新配置 API key (覆盖 `~/.deepx/model.yaml`)\n" +
 			"- `/skills` — 列出可用 skill\n" +
+			"- `/skill-add` `/skill-delete` — 搜索安装 / 删除 skill\n" +
 			"- `/mcp-list` `/mcp-add` `/mcp-delete` — 管理 MCP server\n" +
 			"- `/lang` — 切换语言 (中/英)\n" +
 			"- `/compact` — 手动压缩会话历史(保留尾部 20%)\n" +
@@ -142,6 +151,7 @@ var translations = map[string]map[Lang]string{
 			"- `/mode` — Show current mode\n" +
 			"- `/config` — Reconfigure API key (overwrites `~/.deepx/model.yaml`)\n" +
 			"- `/skills` — List available skills\n" +
+			"- `/skill-add` `/skill-delete` — Search-install / delete skills\n" +
 			"- `/mcp-list` `/mcp-add` `/mcp-delete` — Manage MCP servers\n" +
 			"- `/lang` — Switch language (zh/en)\n" +
 			"- `/compact` — Manually compact session history (keep last 20%)\n" +

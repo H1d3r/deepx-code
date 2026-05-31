@@ -202,6 +202,23 @@ type model struct {
 	mcpDelNames   []string
 	mcpDelIdx     int
 
+	// /skill-add 是 search-and-install 多阶段 modal:
+	//   - skillAddInput  :阶段 1 输入(关键词 / URL / 本地路径)
+	//   - skillAddSearching / skillAddInstalling:阶段 2/4 loading 标识
+	//   - skillAddResults / skillAddIdx:阶段 3 搜索结果与当前选中
+	// Esc 一律关 modal,异步搜索 / 安装结果通过 skillSearchDoneMsg / skillInstallDoneMsg 回 Update。
+	showSkillAdd       bool
+	skillAddInput      textinput.Model
+	skillAddErr        string
+	skillAddSearching  bool
+	skillAddInstalling bool
+	skillAddResults    []skill.RemoteSkillInfo
+	skillAddIdx        int
+	// /skill-delete 弹已装 skill 列表选删,跟原来一致。
+	showSkillDelete bool
+	skillDelNames   []string
+	skillDelIdx     int
+
 	// 版本信息。version 是 build 时注入的当前版本号(go build 默认 "dev")。
 	// latestVersion 是异步检查得到的 GitHub latest release,空则没检查到 / 网络失败。
 	// upgradeAvailable 由 versionNewer(latestVersion, version) 算出,渲染时用来决定是否
@@ -302,6 +319,11 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 	mi.CharLimit = 512
 	mi.SetWidth(54)
 
+	ski := textinput.New()
+	ski.Placeholder = "关键词 或 https://github.com/owner/repo 或 ~/path"
+	ski.CharLimit = 512
+	ski.SetWidth(54)
+
 	// 起手角色 = flash (若 flash 未配置则退化到 pro)
 	role := "flash"
 	activeID := models.Flash.Model
@@ -347,6 +369,7 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 	m := model{
 		mcpMgr:          mcpMgr,
 		mcpAddInput:     mi,
+		skillAddInput:   ski,
 		chatContent:     newChatLog(maxChatBytes),
 		currentReply:    &strings.Builder{},
 		chatViewport:    vp,
@@ -803,6 +826,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mcpAddInput, c = m.mcpAddInput.Update(msg)
 			return m, c
 		}
+		// skill-add modal 期间,转发给 skillAddInput(允许粘贴 URL / 路径)
+		// 仅阶段 1(无结果且非 loading 时)接管 paste;阶段 3 列表态忽略 paste
+		if m.showSkillAdd && !m.skillAddSearching && !m.skillAddInstalling && len(m.skillAddResults) == 0 {
+			var c tea.Cmd
+			m.skillAddInput, c = m.skillAddInput.Update(msg)
+			return m, c
+		}
 		// 空 paste 内容 = 终端有 paste 事件但 PTY 里没文本 → 大概率剪贴板只有图片,主动读 PNG。
 		// 非空 paste 内容 = 普通文本粘贴,放掉让 textinput 自己接(它有 PasteMsg 处理)。
 		if msg.Content == "" {
@@ -991,6 +1021,79 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "esc", "ctrl+c":
 				m.showMcpDelete = false
+				m.input.Focus()
+				return m, nil
+			}
+			return m, nil
+		}
+
+		// /skill-add modal:四阶段
+		//   - searching/installing:只接 Esc 关 modal,其他键吞掉
+		//   - 结果列表态:↑↓ 选 / Enter 装(异步)/ Esc 关
+		//   - 输入态:textinput 编辑 / Enter 提交(异步搜索 or 直装)/ Esc 关
+		if m.showSkillAdd {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.showSkillAdd = false
+				m.skillAddErr = ""
+				m.skillAddInput.Blur()
+				m.skillAddResults = nil
+				m.skillAddSearching = false
+				m.skillAddInstalling = false
+				m.input.Focus()
+				return m, nil
+			}
+			// loading 阶段:键盘吞掉等异步消息
+			if m.skillAddSearching || m.skillAddInstalling {
+				return m, nil
+			}
+			// 阶段 3:有搜索结果时
+			if len(m.skillAddResults) > 0 {
+				switch msg.String() {
+				case "up", "k":
+					if m.skillAddIdx > 0 {
+						m.skillAddIdx--
+					}
+					return m, nil
+				case "down", "j":
+					if m.skillAddIdx < len(m.skillAddResults)-1 {
+						m.skillAddIdx++
+					}
+					return m, nil
+				case "enter":
+					return m, m.installSelectedSkillResult()
+				}
+				return m, nil
+			}
+			// 阶段 1:输入态
+			if msg.String() == "enter" {
+				return m, m.submitSkillAdd()
+			}
+			var c tea.Cmd
+			m.skillAddInput, c = m.skillAddInput.Update(msg)
+			return m, c
+		}
+
+		// /skill-delete modal:↑/↓ 选,Enter 删,Esc 取消(完全镜像 /mcp-delete)
+		if m.showSkillDelete {
+			switch msg.String() {
+			case "up", "k":
+				if m.skillDelIdx > 0 {
+					m.skillDelIdx--
+				}
+				return m, nil
+			case "down", "j":
+				if m.skillDelIdx < len(m.skillDelNames)-1 {
+					m.skillDelIdx++
+				}
+				return m, nil
+			case "enter":
+				m.submitSkillDelete()
+				return m, nil
+			case "esc", "ctrl+c":
+				m.showSkillDelete = false
 				m.input.Focus()
 				return m, nil
 			}
@@ -1517,6 +1620,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 审核完成,恢复流监听继续工具循环
 		return m, agent.ListenToStream(m.streamCh)
 
+	case skillSearchDoneMsg:
+		// /skill-add 阶段 2 完成:转阶段 3 列表(或回阶段 1 报错)
+		m.skillAddSearching = false
+		if msg.err != nil {
+			m.skillAddErr = "搜索失败:" + msg.err.Error()
+			return m, nil
+		}
+		if len(msg.results) == 0 {
+			m.skillAddErr = fmt.Sprintf("没找到关于 %q 的 skill", msg.query)
+			return m, nil
+		}
+		m.skillAddResults = msg.results
+		m.skillAddIdx = 0
+		return m, nil
+
+	case skillInstallDoneMsg:
+		// /skill-add 阶段 4 完成:关 modal,chat 出结果
+		m.skillAddInstalling = false
+		m.showSkillAdd = false
+		m.skillAddInput.Blur()
+		m.skillAddResults = nil
+		m.input.Focus()
+		if msg.err != nil {
+			m.appendChat("System", "✗ 安装失败:"+msg.err.Error())
+		} else {
+			m.appendChat("System", fmt.Sprintf("✓ 已安装 skill「%s」到 ~/.deepx/skills/%s/", msg.skillName, msg.skillName))
+		}
+		return m, nil
+
 	case compressionResultMsg:
 		m.compacting = false
 		if msg.err != nil {
@@ -1782,6 +1914,10 @@ func (m *model) handleSlashCommand(input string) tea.Cmd {
 		m.openSetupModal()
 	case "/skills":
 		m.appendChat("assistant", m.skillsListMessage())
+	case "/skill-add":
+		m.openSkillAddModal()
+	case "/skill-delete":
+		m.openSkillDeleteModal()
 	case "/mcp-list":
 		m.appendChat("System", m.mcpListMessage())
 	case "/mcp-add":

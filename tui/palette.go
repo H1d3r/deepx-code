@@ -23,6 +23,8 @@ func slashCommands() []struct{ name, desc string } {
 		{"/mode", T("cmd.mode.desc")},
 		{"/config", T("cmd.config.desc")},
 		{"/skills", T("cmd.skills.desc")},
+		{"/skill-add", T("cmd.skill-add.desc")},
+		{"/skill-delete", T("cmd.skill-delete.desc")},
 		{"/mcp-list", T("cmd.mcp-list.desc")},
 		{"/mcp-add", T("cmd.mcp-add.desc")},
 		{"/mcp-delete", T("cmd.mcp-delete.desc")},
