@@ -228,6 +228,10 @@ type model struct {
 	upgradeAvailable bool
 	upgradeURL       string
 
+	// Ctrl+C 双击退出保护。第一次按时间戳记到这里;ctrlcExitWindow 内再按才 quit。
+	// streaming 中第一次也会取消流(行为同 Esc),避免要按两个键才能停一个跑得离谱的任务。
+	lastCtrlCAt time.Time
+
 	// 右栏仪表盘字段
 	workspace       string        // os.Getwd() at startup,展示当前工作目录
 	turnStartedAt   time.Time     // 本轮 Enter 时刻,用于实时计算 elapsed
@@ -522,6 +526,10 @@ type cursorBlinkTickMsg struct{}
 
 // cursorBlinkInterval = 半周期。亮 600ms,灭 600ms,跟旧虚拟光标的节奏对齐。
 const cursorBlinkInterval = 600 * time.Millisecond
+
+// ctrlcExitWindow 两次 Ctrl+C 之间允许的最大时间差。第一次按下若 streaming 中则取消流并
+// 提示再按退出;窗口内第二次 → 真退。
+const ctrlcExitWindow = 1 * time.Second
 
 func cursorBlinkTick() tea.Cmd {
 	return tea.Tick(cursorBlinkInterval, func(time.Time) tea.Msg {
@@ -983,15 +991,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// /mcp-add modal:单行输入,Enter 保存连接,Esc 取消
+		// /mcp-add modal:单行输入,Enter 保存连接,Esc/Ctrl+C 取消
+		// Ctrl+C 在 modal 里改成"关 modal"(不退程序);需要真退用 Esc 关 modal 后再 Ctrl+C 两次。
 		if m.showMcpAdd {
 			switch msg.String() {
-			case "ctrl+c":
-				return m, tea.Quit
 			case "enter":
 				m.submitMcpAdd()
 				return m, nil
-			case "esc":
+			case "esc", "ctrl+c":
 				m.showMcpAdd = false
 				m.mcpAddErr = ""
 				m.mcpAddInput.Blur()
@@ -1033,9 +1040,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		//   - 输入态:textinput 编辑 / Enter 提交(异步搜索 or 直装)/ Esc 关
 		if m.showSkillAdd {
 			switch msg.String() {
-			case "ctrl+c":
-				return m, tea.Quit
-			case "esc":
+			case "esc", "ctrl+c":
+				// Ctrl+C 在 modal 内只关 modal(同 Esc),不退程序;真退要回主输入再按两次。
 				m.showSkillAdd = false
 				m.skillAddErr = ""
 				m.skillAddInput.Blur()
@@ -1259,17 +1265,42 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "ctrl+c":
-			// Ctrl+C 退出程序。若正在流式,先取消后台任务。
-			if m.streaming {
-				if m.cancelAgent != nil {
+			// Ctrl+C 双击退出保护:防止误触一下就退。
+			//   - streaming 中第一次:先取消(同 Esc 行为)+ 提示再按退出
+			//   - idle 中第一次:只提示,不退
+			//   - 任何时候 2s 内第二次:tea.Quit
+			now := time.Now()
+			if !m.lastCtrlCAt.IsZero() && now.Sub(m.lastCtrlCAt) <= ctrlcExitWindow {
+				// 第二次,窗口内,退
+				if m.streaming && m.cancelAgent != nil {
 					m.cancelAgent()
 					m.cancelAgent = nil
 				}
 				if m.streamCh != nil {
 					drainAndDiscard(m.streamCh)
 				}
+				return m, tea.Quit
 			}
-			return m, tea.Quit
+			// 第一次(或上一次已过期)
+			m.lastCtrlCAt = now
+			if m.streaming {
+				// 顺手把流取消了(等同 Esc)。这样用户单按一次就停,不需要先 Esc 再 Ctrl+C。
+				if m.cancelAgent != nil {
+					m.cancelAgent()
+					m.cancelAgent = nil
+				}
+				if m.streamCh != nil {
+					drainAndDiscard(m.streamCh)
+					m.streamCh = nil
+				}
+				m.streaming = false
+				m.thinking = false
+				m.status = "idle"
+				m.chatContent.Append(T("misc.interrupted"))
+			}
+			m.appendChat("System", T("misc.ctrlc_again_to_quit"))
+			m.refreshViewport()
+			return m, nil
 		case "esc":
 			// Esc 中断当前对话。取消 context 真正终止后台 HTTP 请求和工具调用,
 			// 然后 drain channel 防止 goroutine 阻塞。
@@ -1284,6 +1315,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.thinking = false
 				m.status = "idle"
 				m.chatContent.Append(T("misc.interrupted"))
+				// 打断后把这一轮的用户输入回填到空输入框,方便改一下重发。
+				// pendingUserText 是本轮原文(StreamDoneMsg 成功后才清空,所以打断时仍在);
+				// 仅当输入框为空时回填,不覆盖用户已敲入的新内容。
+				if strings.TrimSpace(m.input.Value()) == "" && m.pendingUserText != "" {
+					m.input.SetValue(m.pendingUserText)
+				}
 				m.refreshViewport()
 				return m, nil
 			}
@@ -1935,12 +1972,51 @@ func (m *model) handleSlashCommand(input string) tea.Cmd {
 		}
 	case "/compact":
 		return m.startManualCompaction()
+	case "/undo":
+		m.undoLastTurn()
 	case "/help":
 		m.appendChat("assistant", T("help.body"))
 	default:
 		m.appendChat("assistant", fmt.Sprintf(T("mode.unknown_cmd"), cmd))
 	}
 	return nil
+}
+
+// undoLastTurn 撤销最近一轮对话(类似 Claude Code 的 /undo):从 history 里删掉最后一条
+// user 消息及其后的所有消息(assistant 回复 / 工具调用),重建显示并落盘 gob,再把被撤销的
+// 用户输入回填到空输入框,方便编辑后重发。
+//   - 流式进行中拒绝(先 Esc 停)——否则会和正在写 history 的流竞争。
+//   - jsonl 是 append-only 的检索/兜底通道,不回写;权威恢复源 history.gob 已更新即可。
+func (m *model) undoLastTurn() {
+	if m.streaming {
+		m.appendChat("System", T("undo.streaming"))
+		return
+	}
+	last := -1
+	for i := len(m.history) - 1; i >= 0; i-- {
+		if m.history[i].Role == "user" {
+			last = i
+			break
+		}
+	}
+	if last < 0 {
+		m.appendChat("System", T("undo.nothing"))
+		return
+	}
+	undone := m.history[last].Content
+	m.history = m.history[:last]
+	if m.session != nil {
+		_ = m.session.SaveGob("history.gob", m.history)
+	}
+	// 显示重建:清空后按截断后的 history 重放,再叠一行撤销提示。
+	m.chatContent.Reset()
+	rebuildChatFromHistory(m.chatContent, m.history)
+	// 原输入回填(仅当输入框为空,不覆盖用户已敲入的新内容)。
+	if strings.TrimSpace(m.input.Value()) == "" && undone != "" {
+		m.input.SetValue(undone)
+	}
+	m.appendChat("System", T("undo.done"))
+	m.refreshViewport()
 }
 
 // handleModelCommand 处理 /model:无参数(或参数不认识)→ 弹窗选择;

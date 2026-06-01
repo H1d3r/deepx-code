@@ -117,6 +117,22 @@ var translations = map[string]map[Lang]string{
 		LangZH: "手动压缩会话历史(保留 20%)",
 		LangEN: "Manually compact session history (keep 20%)",
 	},
+	"cmd.undo.desc": {
+		LangZH: "撤销上一轮对话(原输入回填输入框)",
+		LangEN: "Undo the last exchange (restores your input)",
+	},
+	"undo.done": {
+		LangZH: "↩ 已撤销上一轮对话,原输入已回填输入框",
+		LangEN: "↩ Undid the last exchange; your input is back in the box",
+	},
+	"undo.nothing": {
+		LangZH: "没有可撤销的对话",
+		LangEN: "Nothing to undo",
+	},
+	"undo.streaming": {
+		LangZH: "正在生成中,先按 Esc 停止再 /undo",
+		LangEN: "Still streaming — press Esc to stop, then /undo",
+	},
 	"cmd.help.desc": {
 		LangZH: "帮助",
 		LangEN: "Help",
@@ -134,7 +150,9 @@ var translations = map[string]map[Lang]string{
 			"- `/skill-add` `/skill-delete` — 搜索安装 / 删除 skill\n" +
 			"- `/mcp-list` `/mcp-add` `/mcp-delete` — 管理 MCP server\n" +
 			"- `/lang` — 切换语言 (中/英)\n" +
+			"- `/reasoning` — 设置 thinking / reasoning_effort(per-role,空值不发)\n" +
 			"- `/compact` — 手动压缩会话历史(保留尾部 20%)\n" +
+			"- `/undo` — 撤销上一轮对话(原输入回填输入框)\n" +
 			"- `/help` — 帮助\n\n" +
 			"**输入**\n\n" +
 			"- `@` — 引用文件(弹出文件选择器,选中后插入路径,模型按需读取)\n\n" +
@@ -143,7 +161,7 @@ var translations = map[string]map[Lang]string{
 			"- `Ctrl+Shift+A` / macOS `Cmd+Shift+A` — 输入框全选\n" +
 			"- `Ctrl+V` — 粘贴(含图片)\n" +
 			"- `Esc` — 中断当前对话\n" +
-			"- `Ctrl+C` — 退出程序",
+			"- `Ctrl+C` — 按两次退出程序(1 秒内;弹窗内则关弹窗)",
 		LangEN: "\n**Slash commands**\n\n" +
 			"- `/plan` — Switch to read-only mode (Read / List / Grep / Glob / Tree / Search / Fetch / Memory only)\n" +
 			"- `/auto` — Switch back to full-tools mode (default)\n" +
@@ -154,7 +172,9 @@ var translations = map[string]map[Lang]string{
 			"- `/skill-add` `/skill-delete` — Search-install / delete skills\n" +
 			"- `/mcp-list` `/mcp-add` `/mcp-delete` — Manage MCP servers\n" +
 			"- `/lang` — Switch language (zh/en)\n" +
+			"- `/reasoning` — Set thinking / reasoning_effort (per-role, empty = don't send)\n" +
 			"- `/compact` — Manually compact session history (keep last 20%)\n" +
+			"- `/undo` — Undo the last exchange (restores your input)\n" +
 			"- `/help` — Help\n\n" +
 			"**Input**\n\n" +
 			"- `@` — Reference a file (opens a picker; inserts the path for the model to read)\n\n" +
@@ -163,7 +183,7 @@ var translations = map[string]map[Lang]string{
 			"- `Ctrl+Shift+A` / macOS `Cmd+Shift+A` — Select all in input\n" +
 			"- `Ctrl+V` — Paste (including images)\n" +
 			"- `Esc` — Interrupt current turn\n" +
-			"- `Ctrl+C` — Quit",
+			"- `Ctrl+C` — Press twice within 1s to quit (closes modal if one is open)",
 	},
 
 	// === 模式提示 ===
@@ -372,6 +392,10 @@ var translations = map[string]map[Lang]string{
 	"misc.interrupted": {
 		LangZH: "\n\n_已中断_\n\n",
 		LangEN: "\n\n_Interrupted_\n\n",
+	},
+	"misc.ctrlc_again_to_quit": {
+		LangZH: "再按一次 Ctrl+C 退出 deepx(1 秒内)",
+		LangEN: "Press Ctrl+C again to quit deepx (within 1 second)",
 	},
 	"misc.input_placeholder": {
 		LangZH: "Type a message…  Enter 发送 · Option/Alt+Enter 换行 · Esc 中断",
