@@ -74,6 +74,12 @@ type model struct {
 	streaming bool
 	tokens    int
 
+	// queuedInput 是流式进行中用户按 Enter 排队的消息(不打断当前轮)。
+	// 流式无法往一个 in-flight 请求里追加内容,所以"边生成边输入"只能排队:本轮
+	// StreamDoneMsg(或压缩完成)后按 FIFO 弹出一条作为新一轮发送,其余随后续轮次链式发出
+	// —— 每条排队消息各成一轮。Esc / Ctrl+C 打断本轮时一并清空(用户在中止,不该再自动续发)。
+	queuedInput []string
+
 	currentReply *strings.Builder
 
 	// 待发送的图片已落盘文件路径,Ctrl+V 累加,enter 后清空。
@@ -547,6 +553,20 @@ func (m model) broadcast(ev web.Event) {
 // submitUserInput 是终端 Enter 和 web 输入共用的提交入口:
 // 斜杠命令直接执行;否则构造 user 消息、落盘、广播 user_message,并启动 agent stream。
 // 不碰输入框(textarea 清空由 Enter 分支自己做)。
+// popQueuedInput 弹出一条排队输入(FIFO)并作为新一轮提交,返回 ok=true 表示确有排队被发出。
+// 只在 streaming 已置 false 后调用(StreamDoneMsg / 压缩完成),此时可安全开下一轮;剩余排队
+// 随它这一轮的 StreamDoneMsg 再次触发,链式逐条发出。
+func (m model) popQueuedInput() (model, tea.Cmd, bool) {
+	if len(m.queuedInput) == 0 {
+		return m, nil, false
+	}
+	next := m.queuedInput[0]
+	m.queuedInput = m.queuedInput[1:]
+	var cmd tea.Cmd
+	m, cmd = m.submitUserInput(next)
+	return m, cmd, true
+}
+
 func (m model) submitUserInput(input string) (model, tea.Cmd) {
 	input = strings.TrimSpace(input)
 	if input == "" && len(m.attachedImagePaths) == 0 {
@@ -1297,6 +1317,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.thinking = false
 				m.status = "idle"
 				m.chatContent.Append(T("misc.interrupted"))
+				m.queuedInput = nil // 中止本轮 → 丢弃排队消息,不再自动续发
 			}
 			m.appendChat("System", T("misc.ctrlc_again_to_quit"))
 			m.refreshViewport()
@@ -1315,6 +1336,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.thinking = false
 				m.status = "idle"
 				m.chatContent.Append(T("misc.interrupted"))
+				m.queuedInput = nil // 中止本轮 → 丢弃排队消息,不再自动续发
 				// 打断后把这一轮的用户输入回填到空输入框,方便改一下重发。
 				// pendingUserText 是本轮原文(StreamDoneMsg 成功后才清空,所以打断时仍在);
 				// 仅当输入框为空时回填,不覆盖用户已敲入的新内容。
@@ -1355,6 +1377,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "enter":
 			if m.streaming {
+				// 流式进行中:不打断,把这条排队,本轮结束后自动发送(见 queuedInput / StreamDoneMsg)。
+				// 只排文本;此刻挂着的图片留在 attachedImagePaths,由下一次真正提交时一并消费。
+				q := strings.TrimSpace(m.input.Value())
+				if q == "" {
+					return m, nil
+				}
+				m.queuedInput = append(m.queuedInput, q)
+				m.input.SetValue("")
+				m.refreshViewport()
 				return m, nil
 			}
 			input := strings.TrimSpace(m.input.Value())
@@ -1636,6 +1667,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// 没触发压缩:有排队输入就发下一条(压缩分支优先,排队留到压缩完成后再发,见 compressionResultMsg)。
+		if next, qcmd, ok := m.popQueuedInput(); ok {
+			return next, qcmd
+		}
 		return m, nil
 
 	case agent.StreamErrMsg:
@@ -1651,6 +1686,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cancelAgent = nil
 		m.turnElapsed = time.Since(m.turnStartedAt)
 		m.refreshViewport()
+		// 出错也把排队的下一条发出去(给它一次机会):瞬时错误下能继续,持续错误下级联有界、可 Esc 终止。
+		if next, qcmd, ok := m.popQueuedInput(); ok {
+			return next, qcmd
+		}
 		return m, nil
 
 	case reviewResultMsg:
@@ -1695,11 +1734,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chatContent.Open(kindSystem, "**压缩跳过**:"+msg.err.Error())
 				m.refreshViewport()
 			}
+			// 压缩失败也别把排队消息卡住,照常发出下一条。
+			if next, qcmd, ok := m.popQueuedInput(); ok {
+				return next, qcmd
+			}
 			return m, nil
 		}
 		// 兜底:cutIdx 基于触发时的快照算;若期间 history 已被(另一次压缩/新消息)改动到
 		// 比 cutIdx 短,直接丢弃这个过期结果,避免切片越界 panic。
 		if msg.cutIdx < 0 || msg.cutIdx > len(m.history) {
+			if next, qcmd, ok := m.popQueuedInput(); ok {
+				return next, qcmd
+			}
 			return m, nil
 		}
 		// 摘要进 m.summary(每轮注入 system prompt 尾部),不再作为 history 消息;
@@ -1734,6 +1780,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.chatContent.Open(kindSystem, fmt.Sprintf("**已压缩会话历史（%d 轮→摘要）**", msg.compressedTurns))
 		m.refreshViewport()
+		// 压缩完成,现在在更小的上下文上发出排队的下一条(StreamDoneMsg 把它推迟到了这里)。
+		if next, qcmd, ok := m.popQueuedInput(); ok {
+			return next, qcmd
+		}
 		return m, nil
 	}
 

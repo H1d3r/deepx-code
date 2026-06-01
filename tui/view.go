@@ -86,7 +86,18 @@ func (m model) View() tea.View {
 	if leftW < 1 {
 		leftW = 1
 	}
-	bodyH := m.height - inputAreaHeight
+	// 排队区(流式中暂存的待发送消息)挂在输入框上方,占 queuedH 行,从 body 高度里扣。
+	// 别让它把对话挤没:至少给 chat 留 1 行。
+	queuedLines := m.queuedDisplayLines(m.width)
+	if maxQ := m.height - inputAreaHeight - 1; len(queuedLines) > maxQ {
+		if maxQ < 0 {
+			maxQ = 0
+		}
+		queuedLines = queuedLines[:maxQ]
+	}
+	queuedH := len(queuedLines)
+
+	bodyH := m.height - inputAreaHeight - queuedH
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -98,7 +109,9 @@ func (m model) View() tea.View {
 		chatLines = append(chatLines, strings.Repeat(" ", leftW))
 	}
 	if len(chatLines) > bodyH {
-		chatLines = chatLines[:bodyH]
+		// 仅当排队区压缩了 body 时才会溢出(viewport 自身高度=无排队时的 bodyH)。
+		// 留"尾部"而非头部:流式时 viewport 贴底,最新输出在末尾,要保证它不被排队区盖掉。
+		chatLines = chatLines[len(chatLines)-bodyH:]
 	}
 
 	// 右栏:status section 区,固定 rightW × bodyH。
@@ -155,7 +168,7 @@ func (m model) View() tea.View {
 	}
 	// 输入区不画竖分隔线 —— 分隔线只到 body 底(对话+右栏区),输入区整宽。
 	// 顶部 / 底部按 inputTopPad / inputBotPad 留白,normalizeFrame 会把空行补成整宽。
-	inputLines := make([]string, 0, len(inputRows)+inputTopPad+inputBotPad)
+	inputLines := make([]string, 0, queuedH+len(inputRows)+inputTopPad+inputBotPad)
 	for i := 0; i < inputTopPad; i++ {
 		// 顶部留白的第一行用来挂活动状态行(运行中 spinner+耗时 / 空闲"就绪"),
 		// 其余仍是空行。inputTopPad 不变,光标 Y(bodyH+inputTopPad)也不变。
@@ -165,6 +178,8 @@ func (m model) View() tea.View {
 		}
 		inputLines = append(inputLines, "") // 顶部留白行
 	}
+	// 排队区放在活动状态行之后、输入框之前(紧贴输入框),让"待发送"和你正在打的字成组。
+	inputLines = append(inputLines, queuedLines...)
 	inputLines = append(inputLines, inputRows...)
 	for i := 0; i < inputBotPad; i++ {
 		inputLines = append(inputLines, "") // 底部留白行
@@ -205,8 +220,8 @@ func (m model) View() tea.View {
 			idx = 0
 		}
 		palette := renderCommandPalette(matches, idx, leftW)
-		// 输入框首行 Y = body(bodyH) + 顶部留白行数
-		inputY := bodyH + inputTopPad
+		// 输入框首行 Y = body(bodyH) + 排队区行数 + 顶部留白行数
+		inputY := bodyH + queuedH + inputTopPad
 		startY := inputY - len(matches)
 		if startY < 0 {
 			startY = 0
@@ -223,7 +238,7 @@ func (m model) View() tea.View {
 				idx = 0
 			}
 			palette := renderFileMentionPalette(matches, idx, leftW)
-			inputY := bodyH + inputTopPad
+			inputY := bodyH + queuedH + inputTopPad
 			startY := inputY - len(matches)
 			if startY < 0 {
 				startY = 0
@@ -270,7 +285,7 @@ func (m model) View() tea.View {
 	if !m.showSetup && !m.showLangModal && !m.showMcpAdd && !m.showMcpDelete && !m.showSkillAdd && !m.showSkillDelete && !m.reviewPending && !m.cursorBlinkOff {
 		if c := m.input.Cursor(); c != nil {
 			c.Position.X += inputGutterWidth
-			c.Position.Y += bodyH + inputTopPad
+			c.Position.Y += bodyH + queuedH + inputTopPad
 			v.Cursor = c
 		}
 	}
@@ -331,6 +346,41 @@ func codegraphColor(s string) color.Color {
 		return lipgloss.Color("11")
 	}
 	return subtleColor
+}
+
+// queuedMaxRows 排队区最多显示几条原文,超出折叠成 "… +N"。
+const queuedMaxRows = 5
+
+// queuedDisplayLines 把排队消息(流式中按 Enter 暂存、本轮结束自动发)渲染成输入框上方的
+// "待发送"区——仿 Claude Code:让用户直接看到排队的原文,而不是一个计数。
+// 每条折成一行(换行压成空格)按宽度截断;超过 queuedMaxRows 条时末行折叠成 "… +N"。
+// 返回的行已含左侧 gutter 缩进,直接拼进 inputBlock 顶部即可。
+func (m model) queuedDisplayLines(width int) []string {
+	if len(m.queuedInput) == 0 {
+		return nil
+	}
+	dim := lipgloss.NewStyle().Foreground(subtleColor).Render
+	gutter := strings.Repeat(" ", inputGutterWidth)
+	avail := width - inputGutterWidth - 2 // 2 = "↳ " 标记宽
+	if avail < 8 {
+		avail = 8
+	}
+	shown := m.queuedInput
+	overflow := 0
+	if len(shown) > queuedMaxRows {
+		overflow = len(shown) - (queuedMaxRows - 1)
+		shown = shown[:queuedMaxRows-1]
+	}
+	lines := make([]string, 0, len(shown)+1)
+	for _, q := range shown {
+		oneLine := strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(q)
+		oneLine = ansi.Truncate(oneLine, avail, "…")
+		lines = append(lines, gutter+dim("↳ "+oneLine))
+	}
+	if overflow > 0 {
+		lines = append(lines, gutter+dim("… +"+strconv.Itoa(overflow)))
+	}
+	return lines
 }
 
 // statusFooterLine 渲染输入框正上方那一行活动状态——把"在跑还是结束了"放到用户注意力

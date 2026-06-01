@@ -157,7 +157,7 @@ var translations = map[string]map[Lang]string{
 			"**输入**\n\n" +
 			"- `@` — 引用文件(弹出文件选择器,选中后插入路径,模型按需读取)\n\n" +
 			"**快捷键**\n\n" +
-			"- `Enter` — 发送\n" +
+			"- `Enter` — 发送;模型回答中按 Enter 则把输入排队,本轮结束自动发出\n" +
 			"- `Ctrl+Shift+A` / macOS `Cmd+Shift+A` — 输入框全选\n" +
 			"- `Ctrl+V` — 粘贴(含图片)\n" +
 			"- `Esc` — 中断当前对话\n" +
@@ -179,7 +179,7 @@ var translations = map[string]map[Lang]string{
 			"**Input**\n\n" +
 			"- `@` — Reference a file (opens a picker; inserts the path for the model to read)\n\n" +
 			"**Keybindings**\n\n" +
-			"- `Enter` — Send\n" +
+			"- `Enter` — Send; while the model is responding, Enter queues your input and it's sent when the turn ends\n" +
 			"- `Ctrl+Shift+A` / macOS `Cmd+Shift+A` — Select all in input\n" +
 			"- `Ctrl+V` — Paste (including images)\n" +
 			"- `Esc` — Interrupt current turn\n" +
