@@ -50,28 +50,27 @@ const inputGutterWidth = 2
 // inputPromptStyle 是 gutter 里 "❱ " 的样式(粉紫加粗,同 banner 主色)。
 var inputPromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("99")).Bold(true)
 
-// scrollbarWidth 是 chat 区最右侧留给竖向滚动条的列宽。
-const scrollbarWidth = 1
-
 var (
-	scrollbarThumbStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244")) // 滑块
-	scrollbarTrackStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("237")) // 轨道(暗)
+	scrollbarDividerStyle = lipgloss.NewStyle().Foreground(bannerDecoColor)                  // 常规分隔线 │
+	scrollbarThumbStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Bold(true) // 滑块 ┃(高亮)
 )
 
-// renderScrollbar 返回 height 行、每行 1 列的竖向滚动条,滑块大小/位置反映 chat viewport 的滚动状态。
-// 内容不溢出(总行数 ≤ 可见行)时整列留空,布局宽度保持不变。
-func (m model) renderScrollbar(height int) []string {
-	cells := make([]string, height)
+// scrollbarDividers 生成 body 每行的右分隔线字形:常规行 `│`,滑块所在行 `┃`(高亮)。
+// 滚动条就画在这条分隔线上、不另占列 —— 每行都有竖线,右边界始终连续,
+// 不会因多出一列而在 Terminal.app 把右栏挤偏。内容不溢出时全是常规 `│`(就是一条普通分隔线)。
+func (m model) scrollbarDividers(height int) []string {
+	normal := scrollbarDividerStyle.Render("│")
+	out := make([]string, height)
+	for i := range out {
+		out[i] = normal
+	}
 	if height <= 0 {
-		return cells
+		return out
 	}
 	total := m.chatViewport.TotalLineCount()
 	visible := m.chatViewport.Height()
 	if total <= visible || visible <= 0 {
-		for i := range cells {
-			cells[i] = " "
-		}
-		return cells
+		return out
 	}
 	thumb := height * visible / total
 	if thumb < 1 {
@@ -95,14 +94,11 @@ func (m model) renderScrollbar(height int) []string {
 	if pos > height-thumb {
 		pos = height - thumb
 	}
-	for i := 0; i < height; i++ {
-		if i >= pos && i < pos+thumb {
-			cells[i] = scrollbarThumbStyle.Render("█")
-		} else {
-			cells[i] = scrollbarTrackStyle.Render("░")
-		}
+	thumbChar := scrollbarThumbStyle.Render("┃")
+	for i := pos; i < pos+thumb && i < height; i++ {
+		out[i] = thumbChar
 	}
-	return cells
+	return out
 }
 
 // scrollChatToTrackRow 把滚动条轨道上的第 row 行(光标 Y - chatTop)映射成 chat 的滚动偏移并应用。
@@ -186,25 +182,16 @@ func (m model) View() tea.View {
 		bodyH = 1
 	}
 
-	// chat 区:内容占 leftW-scrollbarWidth,最右一列留给滚动条,合计精确 leftW × bodyH。
-	contentW := leftW - scrollbarWidth
-	if contentW < 1 {
-		contentW = 1
-	}
-	chatPadded := padLinesToWidth(m.chatViewport.View(), contentW)
+	// chat 区:pad/截到精确 leftW × bodyH。
+	chatPadded := padLinesToWidth(m.chatViewport.View(), leftW)
 	chatLines := strings.Split(chatPadded, "\n")
 	for len(chatLines) < bodyH {
-		chatLines = append(chatLines, strings.Repeat(" ", contentW))
+		chatLines = append(chatLines, strings.Repeat(" ", leftW))
 	}
 	if len(chatLines) > bodyH {
 		// 仅当排队区压缩了 body 时才会溢出(viewport 自身高度=无排队时的 bodyH)。
 		// 留"尾部"而非头部:流式时 viewport 贴底,最新输出在末尾,要保证它不被排队区盖掉。
 		chatLines = chatLines[len(chatLines)-bodyH:]
-	}
-	// 最右列拼上滚动条,使每行恢复 leftW 宽。
-	bar := m.renderScrollbar(bodyH)
-	for i := range chatLines {
-		chatLines[i] += bar[i]
 	}
 
 	// 右栏:status section 区,固定 rightW × bodyH。
@@ -227,11 +214,13 @@ func (m model) View() tea.View {
 	// terminal 实际渲染之间可能差 1 cell,逐行差异导致 `│` 在某些行偏移、视觉上断开。
 	// 字符串拼接让 `│` 永远紧跟在 chat 最后一个字符之后,跟 chat 行内容流式衔接,
 	// 即使 chat 行实际宽度跟预期不一致,`│` 也连贯不断。
-	dividerStyleP := lipgloss.NewStyle().Foreground(bannerDecoColor)
-	dividerChar := dividerStyleP.Render("│")
+	// 滚动条直接画在这条分隔线上(不另占列):每行都有竖线,右边界始终连续;
+	// 滑块所在行换成高亮粗竖线 `┃`,其余行是常规 `│`。都是宽度 1 的 box-drawing 字符,
+	// 在 macOS Terminal.app 也稳定渲染成 1 cell,不会像 `█`/`░` 那样把右栏挤偏。
+	divs := m.scrollbarDividers(bodyH)
 	bodyLines := make([]string, bodyH)
 	for i := 0; i < bodyH; i++ {
-		bodyLines[i] = chatLines[i] + dividerChar + rightLines[i]
+		bodyLines[i] = chatLines[i] + divs[i] + rightLines[i]
 	}
 	body := strings.Join(bodyLines, "\n")
 

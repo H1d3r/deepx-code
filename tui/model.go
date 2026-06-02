@@ -705,7 +705,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		leftW, vpH := m.layout()
-		m.chatViewport.SetWidth(leftW - scrollbarWidth)
+		m.chatViewport.SetWidth(leftW)
 		m.chatViewport.SetHeight(vpH)
 		// 输入区 = 左侧固定 gutter("> ")+ 右侧 textarea。textarea 占整宽 m.width-gutter
 		//(分隔线只到 body 底,输入区横跨整行)。gutter 由 view.go 单独画。
@@ -736,20 +736,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		leftW, vpH := m.layout()
-		// chat 区:X 从 0 起,Y 从 0 起(无顶栏)。最右 scrollbarWidth 列是滚动条,内容列到 scrollbarX 为止。
+		// chat 区:X 从 0 起,Y 从 0 起(无顶栏)。滚动条画在分隔线列(x == leftW),内容列 [0, leftW)。
 		chatLeft, chatTop := 0, 0
-		scrollbarX := leftW - scrollbarWidth
 		chatBottom := chatTop + vpH
 
-		// 先判滚动条:命中那一列就进入拖拽态并按 Y 滚动,return —— 不落到选区逻辑,绝不影响拖拽选中。
-		if msg.X >= scrollbarX && msg.X < leftW && msg.Y >= chatTop && msg.Y < chatBottom {
+		// 先判滚动条/分隔线列:命中就进入拖拽态并按 Y 滚动,return —— 不落到选区逻辑,绝不影响拖拽选中。
+		if msg.X == leftW && msg.Y >= chatTop && msg.Y < chatBottom {
 			m.scrollbarDragging = true
 			m.scrollChatToTrackRow(msg.Y-chatTop, vpH)
 			return m, nil
 		}
 
-		// 选区只认内容列 [chatLeft, scrollbarX),滚动条列被上面截走,二者按 X 互斥。
-		inChat := msg.X >= chatLeft && msg.X < scrollbarX &&
+		// 选区只认内容列 [chatLeft, leftW),分隔线列按 X 与上面互斥。
+		inChat := msg.X >= chatLeft && msg.X < leftW &&
 			msg.Y >= chatTop && msg.Y < chatBottom
 		// 输入区:body 下方整块(空白行 + textarea 行),Y ∈ [vpH, m.height)。
 		inInput := msg.Y >= vpH && msg.Y < m.height && msg.X >= 0 && msg.X < m.width
@@ -787,9 +786,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		leftW, vpH := m.layout()
-		// chat 区:X 从 0 起,Y 从 0 起(无顶栏)。内容列到 scrollbarX 为止,最右是滚动条。
+		// chat 区:X 从 0 起,Y 从 0 起(无顶栏)。内容列 [0, leftW),分隔线列在 leftW。
 		chatLeft, chatTop := 0, 0
-		chatRight := chatLeft + leftW - scrollbarWidth // 选区夹取到内容列,不含滚动条
+		chatRight := chatLeft + leftW // 选区夹取到内容列
 		chatBottom := chatTop + vpH
 
 		// 滚动条拖拽优先:正按在滚动条上 → 按光标 Y 滚动,return,不进选区逻辑。
