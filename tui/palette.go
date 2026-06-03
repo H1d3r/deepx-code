@@ -82,7 +82,7 @@ func filterSlashCommands(input string) []struct{ name, desc string } {
 // 不带 border,直接列若干行候选。选中行用 reverse 视觉标识,其余暗一点的描述色。
 // 渲染结果是 N 行 × maxW 列的 string,左对齐,准备 splice 到主 UI 输入框上方。
 var (
-	paletteSelStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("12")).Bold(true)
+	paletteSelStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("238")).Bold(true)
 	paletteNameStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
 	paletteDescStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 )
