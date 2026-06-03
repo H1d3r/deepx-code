@@ -467,7 +467,9 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 			}
 		}
 
-		if !gobOK {
+		// 只有默认对话(= rootDir)才用 workspace 级 JSONL 兜底恢复;/new 出来的新对话没自己的
+		// history.gob 时就该是空的,不能去捞共享 JSONL 里别的对话的内容(否则新会话显示旧内容)。
+		if !gobOK && sess.OnDefaultConversation() {
 			summary := sess.LoadSummary()
 			if summary != "" {
 				// gob 失效兜底:有摘要时,从 jsonl 取固定最近若干轮接在摘要后。

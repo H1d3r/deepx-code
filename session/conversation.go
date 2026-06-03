@@ -51,6 +51,13 @@ func (m *Manager) CurrentConversation() string {
 	return defaultConvID
 }
 
+// OnDefaultConversation 当前是否为默认对话(= rootDir,升级前的老会话)。
+// 用途:只有默认对话才可用 workspace 级 JSONL 做"无 gob 兜底恢复";/new 出来的新对话
+// 没有自己的 history.gob 时应显示空,绝不能去捞共享 JSONL 里别的对话的内容(否则新会话显示旧内容)。
+func (m *Manager) OnDefaultConversation() bool {
+	return m.CurrentConversation() == defaultConvID
+}
+
 // resolveConvDir 按 current 指针把 convDir 定位到对应对话目录。
 // "default" / 空 / 指针失效(目录不存在)→ 一律回退 rootDir(默认对话,绝不丢老数据)。
 func (m *Manager) resolveConvDir() string {
