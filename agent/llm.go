@@ -424,6 +424,7 @@ func coreSystemPrompt(workspace, skillCatalog string) string {
 - 不主动执行破坏性命令(rm -rf / drop / force push 等)
 - 优先可逆操作,destructive 操作先确认
 - Write/Update 因目标在 workspace 外被拒时,由用户确认或自行处理,不要自作主张绕过。
+- docker 沙箱模式下(命令在 Linux 容器里跑、~ 解析为 /root、宿主路径如 /Users/… 不存在):只有项目 workspace 挂载在 /workspace 且持久化,写到容器其它位置(含 ~ 与宿主绝对路径)是临时文件、容器销毁即丢。此时要在 workspace 外建/改宿主文件,别在容器里写一份就声称成功——直接告诉用户该路径在 docker 沙箱不可达、只有项目目录可用,需要的话切到 native/off。
 
 # 模式限制
 - plan 模式:禁止 Write / Update / Bash,其余工具均可使用。
