@@ -29,6 +29,8 @@
 - **💾 Lossless session persistence** — gob preserves `tool_calls` / tool results / `reasoning_content`, so restarts resume seamlessly; auto layered compaction when the window fills.
 - **🔌 MCP + skill ecosystem** — native MCP; compatible with Claude's skill directories, reuse what you have.
 - **🛡️ Review mode** — file writes / shell run behind human confirmation by default.
+- **🧱 Native OS-level sandbox** — `native` (default) does OS isolation: macOS Seatbelt, Linux bubblewrap — writes confined to the workspace + process isolation; falls back to a soft-policy blacklist where no OS mechanism exists. Also supports `docker` container isolation or `off`. Draws a safety boundary for the agent without requiring containers.
+- **🎛️ Working mode** — one command locks the agent's methodology: `karpathy` (pragmatic) / `openspec` (spec-driven) / `superpowers` (rigorous full workflow). The three are mutually exclusive — picking one disables the other two's skills, preventing methodology mixing. Persisted per session, injected each turn without polluting history.
 - **⚡ Non-interactive `exec` mode** — `deepx exec "task"` runs once and prints the result straight to stdout; pipe data in, redirect output, drop it into scripts / CI / cron — **no TUI needed** (see the section below).
 
 ## 📊 vs Claude Code

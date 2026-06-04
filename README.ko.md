@@ -29,6 +29,8 @@
 - **💾 무손실 세션 영속화** —— gob가 `tool_calls` / 도구 결과 / `reasoning_content`를 완전 보존해 재시작 후에도 매끄럽게 이어감. 윈도가 차면 자동 계층 압축.
 - **🔌 MCP + Skill 생태계** —— MCP 네이티브 지원. Claude의 skill 디렉터리와 호환되어 기존 skill을 그대로 재사용.
 - **🛡️ 검토 모드** —— 파일 쓰기 / Shell 실행은 기본적으로 사람의 확인을 요구.
+- **🧱 네이티브 OS 수준 샌드박스** —— 기본 `native`는 OS 격리: macOS Seatbelt, Linux bubblewrap — 쓰기를 workspace로 제한 + 프로세스 격리; OS 메커니즘이 없는 플랫폼은 소프트 정책 블랙리스트로 폴백. `docker` 컨테이너 격리나 `off`도 지원. 컨테이너 없이도 agent에 안전 경계를 그어준다.
+- **🎛️ 작업 모드(working mode)** —— 명령 하나로 방법론을 고정: `karpathy`(실용주의) / `openspec`(스펙 주도) / `superpowers`(전체 워크플로 엄격). 세 모드는 상호 배타적 — 하나를 선택하면 나머지 두 개의 skill을 비활성화해 방법론 혼용을 방지. 세션에 저장되며 매 턴 히스토리를 오염시키지 않고 프롬프트 주입.
 - **⚡ 비대화형 `exec` 모드** —— `deepx exec "작업"` 은 한 번 실행하고 결과를 바로 stdout으로 출력. 파이프로 입력하고, 출력을 리다이렉트하고, 스크립트 / CI / cron에 넣을 수 있어 **TUI에 들어갈 필요 없음**(아래 참조).
 
 ## 📊 Claude Code 비교

@@ -29,6 +29,8 @@
 - **💾 无损会话持久化** —— gob 完整保留 `tool_calls` / `tool results` / `reasoning_content`，重启无缝续接；超窗自动分层压缩。
 - **🔌 MCP + Skill 生态** —— 原生 MCP；兼容 Claude 的 skill 目录，已有 skill 直接复用。
 - **🛡️ 审核模式** —— 写文件 / 执行 Shell 默认需人工确认，安全可控。
+- **🧱 原生 OS 级沙箱** —— 默认 `native` 做 OS 隔离（macOS Seatbelt、Linux bubblewrap，写操作限定 workspace + 进程隔离；无 OS 机制平台退软策略），也支持 `docker` 容器隔离或 `off` 关闭，不依赖容器也能给 agent 划安全边界。
+- **🎛️ 工作模式（working mode）** —— 一个命令锁定方法论：`karpathy`（务实工匠）/ `openspec`（规格驱动）/ `superpowers`（全流程严谨）；三种互斥，选一禁两、杜绝方法论混搭，切换存入会话、每轮注入不污染历史。
 - **⚡ 非交互 `exec` 模式** —— `deepx exec "任务"` 一次性跑完直接把结果打到 stdout，支持管道喂数据、重定向输出、塞进脚本 / CI / cron，**不必进 TUI**（用法见下方「非交互执行」一节）。
 
 ## 📊 对比 Claude Code
