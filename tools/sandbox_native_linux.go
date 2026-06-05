@@ -52,9 +52,12 @@ func nativeShellCmd(command, cwd string) *exec.Cmd {
 		"--unshare-pid", "--unshare-uts", "--unshare-ipc", // 进程隔离
 		"--die-with-parent", // deepx 退出则沙箱进程一起死
 	}
-	// 可写目录:在只读根之上叠加可写绑定(workspace + 临时 + 缓存)
+	// 可写目录:在只读根之上叠加可写绑定(workspace + 临时 + 缓存)。
+	// 用 --bind-try 而非 --bind:候选里含 macOS 专属路径(/private/tmp、~/Library/Caches),
+	// 这些在 Linux 上不存在,普通 --bind 绑定不存在的 source 会致命报错
+	// "bwrap: Can't find source path ..." 导致每条命令都挂(见 issue #68)。--bind-try 跳过即可。
 	for _, p := range nativeWritableRoots(cwd) {
-		args = append(args, "--bind", p, p)
+		args = append(args, "--bind-try", p, p)
 	}
 	if cwd != "" {
 		args = append(args, "--chdir", cwd)
