@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -948,12 +949,18 @@ func streamOnce(
 		return contentBuilder.String(), reasoningBuilder.String(), nil, finishReason, lastUsage, err
 	}
 
-	// 按 index 升序拼装最终 tool_calls
-	var toolCalls []ToolCall
-	for i := 0; i < len(toolBuf); i++ {
-		if tc, ok := toolBuf[i]; ok {
-			toolCalls = append(toolCalls, *tc)
-		}
+	// 按 index 升序拼装最终 tool_calls。
+	// 注意:toolBuf 的 key 不保证从 0 开始、也不保证连续——DeepSeek 官方 index 从 0 起,
+	// 但部分第三方/自建 base_url 池子从 1 起(见 issue #59)。若按 0..len-1 遍历会漏掉
+	// 非零起始或跳号的 key,导致工具调用被整个丢弃、会话被误判为结束而提前中断。
+	idxs := make([]int, 0, len(toolBuf))
+	for idx := range toolBuf {
+		idxs = append(idxs, idx)
+	}
+	sort.Ints(idxs)
+	toolCalls := make([]ToolCall, 0, len(idxs))
+	for _, idx := range idxs {
+		toolCalls = append(toolCalls, *toolBuf[idx])
 	}
 	return contentBuilder.String(), reasoningBuilder.String(), toolCalls, finishReason, lastUsage, nil
 }
