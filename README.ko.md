@@ -220,7 +220,8 @@ CreatePlan
 | `/compact`                           | 세션 수동 압축                      |
 | `/new` `/sessions`                   | 새 대화 시작 / 기록 목록(↑↓ 선택, Enter 전환) |
 | `/status`                            | 오른쪽 상태 패널 표시/숨김(`Ctrl+B` 도 가능) |
-| `/sandbox`                           | 샌드박스: `off`(끄기) / `native`(기본, OS 격리: macOS Seatbelt, Linux bubblewrap — 쓰기를 workspace로 제한 + 프로세스 격리; OS 메커니즘이 없는 플랫폼은 소프트 정책 블랙리스트로 폴백) / `docker`(컨테이너 격리, `/sandbox docker <image>`) |
+| `/web-config`                        | 웹 대시보드 바인드 IP·포트를 팝업으로 설정("IP [포트]"를 공백으로 구분 입력; IP 비움/`127.0.0.1`=로컬 전용, `0.0.0.0`=LAN에서 휴대폰/태블릿 접속 가능, 포트 생략=랜덤). 저장 즉시 재시작 없이 적용되고 새 주소를 표시; 설정은 세션의 `meta.json`에 저장되며 접근 토큰은 세션별로 고정되어 재시작 후에도 동일. ⚠️ 이 패널은 세션을 제어하고 명령을 실행할 수 있으며 평문 HTTP이므로 신뢰할 수 있는 LAN에서만 노출하세요 |
+| `/sandbox`                           | 샌드박스: `off`(끄기) / `native`(기본, OS 격리: macOS Seatbelt, Linux bubblewrap — 쓰기를 workspace로 제한 + 프로세스 격리; OS 메커니즘이 없는 플랫폼은 소프트 정책 블랙리스트로 폴백) / `docker`(컨테이너 격리, `/sandbox docker <image>`) | / `native`(기본, OS 격리: macOS Seatbelt, Linux bubblewrap — 쓰기를 workspace로 제한 + 프로세스 격리; OS 메커니즘이 없는 플랫폼은 소프트 정책 블랙리스트로 폴백) / `docker`(컨테이너 격리, `/sandbox docker <image>`) |
 | `/working-mode`                      | 작업 모드(방법론): `karpathy`(기본, 실용주의) / `openspec`(스펙 주도) / `superpowers`(전체 워크플로 엄격); 팝업으로 선택하거나 `/working-mode kp\|spec\|sp`로 직접 전환. 세 모드는 상호 배타적 — 하나를 선택하면 나머지 두 개의 skill을 비활성화해 방법론 혼용을 방지. 세션에 저장되며 매 턴 히스토리를 오염시키지 않고 프롬프트 주입 |
 | `/lang`                              | UI 언어 전환(중 / 영)               |
 | `/mcp-list` `/mcp-add` `/mcp-delete` | MCP 서버 관리                       |

@@ -227,6 +227,7 @@ CreatePlan
 | `/compact`                 | 手动压缩会话以节省上下文          |
 | `/new` `/sessions`         | 开启全新对话 / 历史对话列表（↑↓ 选，Enter 切换） |
 | `/status`                  | 显示/隐藏右侧状态栏（也可按 `Ctrl+B`） |
+| `/web-config`              | 弹窗设置 web 面板绑定 IP 与端口（填「IP [端口]」，空格分隔；IP 留空/`127.0.0.1`=仅本机，`0.0.0.0`=局域网手机/平板可访问，端口可省=随机）。保存即热生效并显示新地址，无需重启；配置存入会话 `meta.json`，访问令牌按会话固定、跨重启不变。⚠️ 该面板可控制会话、执行命令，且为明文 HTTP，对外暴露仅限可信局域网 |
 | `/sandbox`                 | 沙箱模式：`off`（关闭）/ `native`（默认，OS 隔离：macOS Seatbelt、Linux bubblewrap，写操作限定在 workspace + 进程隔离；无 OS 机制的平台退回软策略黑名单）/ `docker`（容器隔离，`/sandbox docker <镜像>`） |
 | `/working-mode`            | 工作模式（方法论）：`karpathy`（默认，务实工匠）/ `openspec`（规格驱动）/ `superpowers`（全流程严谨）；弹窗选择，也可 `/working-mode kp\|spec\|sp` 直切。三种模式互斥——选中一种会禁用另外两种对应的 skill，避免方法论混搭。切换后存入会话，每轮自动注入提示且不污染历史 |
 | `/lang`                    | 切换界面语言（中 / 英）           |
