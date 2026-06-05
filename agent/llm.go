@@ -114,6 +114,11 @@ type ChatMessage struct {
 	// (历史小、缓存友好)。发请求前由 renderConvoImages 按"当轮模型支不支持视觉"即时渲染:
 	// 支持 → 读成 base64 image_url;不支持 → 路径替回文本走 OCR。gob 持久化(导出字段)。
 	ImagePaths []string `json:"-"`
+	// WorkingMode 记录这条 user 消息**提交当轮所处的工作模式**(只对 user 消息有意义)。
+	// 钉死不变:发请求前由 renderWorkingMode 按**每条消息自己的** mode 确定性渲染后缀,
+	// 切换当前模式不会改写历史消息的后缀 → 历史逐字节稳定、前缀缓存不 miss。空值兜底为默认 kp。
+	// 同 ImagePaths 走"规范形态只存标签、发送那刻才渲染"的思路。gob 持久化(导出字段)。
+	WorkingMode WorkingMode `json:"-"`
 }
 
 // ContentPart 是 OpenAI 多模态消息里 content 数组的一个元素。
@@ -414,7 +419,7 @@ func coreSystemPrompt(workspace, skillCatalog string) string {
 - 查代码符号(函数/类型/方法)的定义、调用关系、实现者、继承请优先用 CodeGraph工具(更准、不误命中注释/字符串)。
 
 # 技能skill使用
-- 在实现功能、修复 bug、重构或 review 代码之前，读取karpathy-guidelines，并遵照其规则执行。
+- 实现功能、修复 bug、重构或 review 代码时,遵循本轮用户消息尾部「工作模式」指明的方法论 skill(加载其正文并执行),不要使用未指明的其它工作模式 skill。
 
 # 任务规划
 - 简单/单步任务:直接做,不要过度规划。

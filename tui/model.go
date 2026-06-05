@@ -2217,13 +2217,16 @@ func (m model) buildUserMessage(text string) agent.ChatMessage {
 	if wd, err := os.Getwd(); err == nil {
 		text = resolveFileMentions(text, wd)
 	}
+	// 钉上提交当轮的工作模式:发送时按这个标签渲染后缀,切模式不改写历史 → 前缀缓存稳定。
+	// gob 持久化,重启后原样恢复(见 ChatMessage.WorkingMode / renderWorkingMode)。
 	if len(m.attachedImagePaths) == 0 {
-		return agent.ChatMessage{Role: "user", Content: text}
+		return agent.ChatMessage{Role: "user", Content: text, WorkingMode: m.workingMode}
 	}
 	return agent.ChatMessage{
-		Role:       "user",
-		Content:    text,
-		ImagePaths: append([]string(nil), m.attachedImagePaths...),
+		Role:        "user",
+		Content:     text,
+		ImagePaths:  append([]string(nil), m.attachedImagePaths...),
+		WorkingMode: m.workingMode,
 	}
 }
 

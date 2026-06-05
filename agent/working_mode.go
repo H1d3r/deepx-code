@@ -47,17 +47,29 @@ func workingModePrompt(m WorkingMode) string {
 	}
 }
 
-// renderWorkingMode 在请求副本上,把当前工作模式提示追加到最后一条 user 消息尾部。
+// renderWorkingMode 在请求副本上,把工作模式提示追加到**每一条** user 消息尾部。
 // 每轮调用,不写回 history(同 renderConvoImages)。返回新切片,不改原 convo。
-func renderWorkingMode(convo []ChatMessage, mode WorkingMode) []ChatMessage {
-	prompt := workingModePrompt(mode)
-	if prompt == "" || len(convo) == 0 {
+//
+// 关键(缓存):每条 user 消息用**它自己记录的** WorkingMode 渲染(不是全局当前模式),
+// 历史消息的模式钉死不变 —— 切换当前模式只影响新消息,旧消息逐字节稳定、前缀缓存命中。
+// 对每条都加、位置无关,同 image_render.go 的提醒语铁律。消息无标签时用 fallback(兼容
+// 升级前没有该字段的旧 gob、以及 exec 等未打标的入口);fallback 也确定 → 字节稳定。
+func renderWorkingMode(convo []ChatMessage, fallback WorkingMode) []ChatMessage {
+	if len(convo) == 0 {
 		return convo
 	}
 	out := make([]ChatMessage, len(convo))
 	copy(out, convo)
-	for i := len(out) - 1; i >= 0; i-- {
+	for i := range out {
 		if out[i].Role != "user" {
+			continue
+		}
+		mode := out[i].WorkingMode
+		if mode == "" {
+			mode = fallback
+		}
+		prompt := workingModePrompt(NormalizeWorkingMode(string(mode)))
+		if prompt == "" {
 			continue
 		}
 		msg := out[i] // 值拷贝,改副本
@@ -67,7 +79,6 @@ func renderWorkingMode(convo []ChatMessage, mode WorkingMode) []ChatMessage {
 			msg.Content = prompt
 		}
 		out[i] = msg
-		break
 	}
 	return out
 }
