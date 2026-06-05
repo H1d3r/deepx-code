@@ -134,7 +134,7 @@
         </div>
 
         <div class="sec">
-          <div class="sec-title">◆ {{ t('panel.plan') }}</div>
+          <div class="sec-title">◆ {{ t('panel.todo') }}</div>
           <div v-if="!plan.length" class="empty">—</div>
           <div v-for="p in plan" :key="p.id" class="plan-item" :class="p.status">
             <span class="box">{{ planIcon(p.status) }}</span>
@@ -146,7 +146,7 @@
         </div>
 
         <div class="sec">
-          <div class="sec-title">◆ {{ t('panel.step') }}</div>
+          <div class="sec-title">◆ {{ t('panel.plan') }}</div>
           <div v-if="!step.length" class="empty">—</div>
           <div v-for="p in step" :key="p.id" class="plan-item" :class="p.status">
             <span class="box">{{ planIcon(p.status) }}</span>

@@ -417,8 +417,8 @@ var translations = map[string]map[Lang]string{
 	"panel.codegraph": {LangZH: "代码图谱", LangEN: "CodeGraph"},
 	"panel.sandbox":   {LangZH: "🛡️ 沙箱", LangEN: "🛡️ Sandbox"},
 	"panel.workmode":  {LangZH: "🧭 工作模式", LangEN: "🧭 Working mode"},
-	"panel.plan":      {LangZH: "计划", LangEN: "Plan"},
-	"panel.step":      {LangZH: "步骤", LangEN: "Step"},
+	"panel.todo":      {LangZH: "待办", LangEN: "Todo"}, // Todo 工具:主 agent 顺序清单
+	"panel.plan":      {LangZH: "计划", LangEN: "Plan"}, // CreatePlan:并发子 agent DAG
 
 	// === Right panel labels ===
 	"panel.label.used":    {LangZH: "占用", LangEN: "Used"},

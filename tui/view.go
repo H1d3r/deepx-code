@@ -877,19 +877,19 @@ func (m model) rightPanelView() string {
 		label(T("panel.label.wmode")) + " " + string(m.workingMode),
 	})...)
 	// 规划进度:始终显示(无规划时 0/0)。完整 plan 树在 chat 区展示,右栏只放摘要。
-	// 计划(Plan)= Todo 工具(顺序清单);步骤(Step)= CreatePlan(并发 DAG)。
+	// 待办(Todo)= Todo 工具(主 agent 顺序清单);计划(Plan)= CreatePlan(并发子 agent DAG)。
 	// 二者共用 m.plan(同一时刻只一种活跃),按 planKind 分到两段显示,另一段为 0/0。
-	var todoState, stepState *planState
+	var todoState, cpState *planState
 	switch m.planKind {
 	case "todo":
 		todoState = m.plan
 	case "createplan":
-		stepState = m.plan
+		cpState = m.plan
 	}
 	rows = append(rows,
-		inlineRow(T("panel.plan"), renderPlanSummary(todoState, 0)[0]),
+		inlineRow(T("panel.todo"), renderPlanSummary(todoState, 0)[0]),
 		"",
-		inlineRow(T("panel.step"), renderPlanSummary(stepState, 0)[0]),
+		inlineRow(T("panel.plan"), renderPlanSummary(cpState, 0)[0]),
 		"")
 	rows = append(rows, inlineRow(T("panel.help"), lipgloss.NewStyle().Foreground(highlightColor).Render("/help")))
 
