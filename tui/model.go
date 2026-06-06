@@ -487,9 +487,10 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 		webURL:          webURL,
 	}
 
-	// 恢复本会话的工作模式(空 = 默认 kp)。
+	// 恢复本会话的工作模式(空 = 默认 kp)与 /model 锁定(子会话级,issue #43)。
 	if sess != nil {
 		m.workingMode = agent.NormalizeWorkingMode(sess.LoadWorkingMode())
+		m.restoreModelPin(sess.LoadModelPin())
 	}
 
 	// 回填上轮 token 用量,Usage section 启动后立刻显示真实数字而非 "—"。
@@ -2807,7 +2808,33 @@ func (m *model) applyModelPin(arg string) {
 	default:
 		return
 	}
+	// 持久化到**当前子会话**的 state.json(issue #43:/new 各记各的,/sessions 切换时恢复)。
+	// auto 也写,覆盖旧的 flash/pro 锁定。
+	if m.session != nil {
+		m.session.SaveModelPin(m.modelPin)
+	}
 	m.broadcast(web.Event{Kind: "routing", Text: m.modelPin})
+}
+
+// restoreModelPin 把从 session 读出的 /model 选择应用到内存(不写盘、不插提示对)。
+// flash/pro 且对应模型已配置 → 锁定并即时切右栏显示;否则回退 auto(右栏起手 flash,
+// flash 未配置则 pro)。供 initialModel 启动恢复与 loadCurrentConversation 切会话恢复共用。
+func (m *model) restoreModelPin(pin string) {
+	switch {
+	case pin == tools.RoleFlash && m.models.Flash.Model != "":
+		m.modelPin = tools.RoleFlash
+		m.setActiveModel(tools.RoleFlash)
+	case pin == tools.RolePro && m.models.Pro.Model != "":
+		m.modelPin = tools.RolePro
+		m.setActiveModel(tools.RolePro)
+	default:
+		m.modelPin = "auto"
+		if m.models.Flash.Model != "" {
+			m.setActiveModel(tools.RoleFlash)
+		} else {
+			m.setActiveModel(tools.RolePro)
+		}
+	}
 }
 
 // setActiveModel 立即把状态区显示的活跃模型切到 role,使 /model 选择即时反映在右栏。
