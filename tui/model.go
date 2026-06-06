@@ -1676,6 +1676,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cancelAgent()
 					m.cancelAgent = nil
 				}
+				// 清理 reviewCh,防止 agent goroutine 泄漏
+				if m.reviewPending && m.reviewCh != nil {
+					m.reviewCh <- false
+					m.reviewPending = false
+					m.reviewCh = nil
+				}
 				if m.streamCh != nil {
 					drainAndDiscard(m.streamCh)
 				}
@@ -1688,6 +1694,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.cancelAgent != nil {
 					m.cancelAgent()
 					m.cancelAgent = nil
+				}
+				// 清理 reviewCh,防止 agent goroutine 泄漏
+				if m.reviewPending && m.reviewCh != nil {
+					m.reviewCh <- false
+					m.reviewPending = false
+					m.reviewCh = nil
 				}
 				if m.streamCh != nil {
 					drainAndDiscard(m.streamCh)
@@ -1720,6 +1732,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.cancelAgent != nil {
 					m.cancelAgent()
 					m.cancelAgent = nil
+				}
+				// 清理 reviewCh,防止 agent goroutine 泄漏
+				if m.reviewPending && m.reviewCh != nil {
+					m.reviewCh <- false
+					m.reviewPending = false
+					m.reviewCh = nil
 				}
 				drainAndDiscard(m.streamCh)
 				m.streamCh = nil
