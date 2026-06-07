@@ -1,0 +1,49 @@
+# Gitee Go 流水线:收到 vX.Y.Z tag 后,在国内 runner 构建 deepx 并发布到 Gitee 发行版。
+#
+# 为什么要它:GitHub Actions 的境外 runner 往 Gitee 上传发行版附件会被限速/卡死,
+# 所以把"构建 + 上传"整体放到 Gitee Go(国内)。真正干活的是 scripts/gitee-release.sh。
+#
+# 启用步骤(需在 Gitee 网页端做一次):
+#   1. 仓库 → 服务/流水线 → 开通 Gitee Go(免费额度足够)。
+#   2. 让它识别本文件 / 新建流水线导入本 YAML;确认触发为 push tag(v 前缀)。
+#   3. 流水线「变量与缓存 / 密钥管理」里加 GITEE_TOKEN = 你的 Gitee 私人令牌
+#      (就是 GitHub 侧 GITHUB2GITEE_DEEPX_TOKEN 那串)。
+#   4. 推一个 tag(GitHub 侧 mirror-to-gitee 会自动把 tag 推到 Gitee)即触发。
+#
+# 注:Gitee Go 的 YAML 是私有格式,插件名 golangbuild@1 / 触发语法以 Gitee Go 在线编辑器为准;
+# 若编辑器报字段不识别,按提示在可视化编辑器里对一下即可,goals 里的脚本调用不用动。
+name: gitee-release
+displayName: 'Gitee 发行版(国内构建+上传)'
+triggers:
+  push:
+    - matchType: PREFIX
+      tag: v
+commitMessage: ''
+stages:
+  - stage:
+      name: build-and-release
+      displayName: '构建并发布到 Gitee 发行版'
+      failFast: false
+      steps:
+        - step: golangbuild@1
+          name: gitee-release
+          displayName: '构建 + 上传发行版'
+          inputs:
+            # 用一个稳妥存在的基础版本开容器,真正的 1.25 由 goals 里兜底安装,
+            # 避免 golangbuild 不提供 1.25 镜像时整步起不来。
+            golangVersion: '1.21'
+            goals: |
+              set -e
+              # deepx 需要 Go 1.25;内置 go 低于它就从国内镜像装一份
+              need=1.25.0
+              have="$(go version 2>/dev/null | sed -n 's/.*go\([0-9.]*\).*/\1/p')"
+              if [ "$(printf '%s\n%s\n' "$need" "${have:-0}" | sort -V | head -1)" != "$need" ]; then
+                echo "内置 go=${have:-none} < ${need},安装 Go ${need}…"
+                curl -fsSL "https://golang.google.cn/dl/go${need}.linux-amd64.tar.gz" -o /tmp/go.tgz
+                rm -rf /tmp/go && tar -C /tmp -xzf /tmp/go.tgz
+                export PATH=/tmp/go/bin:$PATH
+              fi
+              go version
+              command -v zip >/dev/null 2>&1 || (apt-get update -y && apt-get install -y zip) || true
+              # GITEE_TOKEN 来自流水线密钥;TAG 由脚本内 git describe 自动推断
+              bash scripts/gitee-release.sh

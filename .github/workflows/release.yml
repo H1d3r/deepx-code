@@ -45,65 +45,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 把 goreleaser 在 dist/ 里产出的同一批二进制,镜像发布到 Gitee 发行版,
-      # 让国内用户能用 SOURCE=gitee 的 install.sh 加速安装/升级。
-      # 只构建一次(上面 goreleaser),这里纯分发。token 见 GitHub Secret: GITHUB2GITEE_DEEPX_TOKEN。
-      #
-      # 关键点(踩过坑):
-      #   - 境外 runner 推 Gitee 会被限速甚至 stall,curl 必须带 --connect-timeout/--max-time,
-      #     否则无限挂起,continue-on-error 也救不了(它要等 step 结束才生效)。
-      #   - 发行版做成幂等:重跑时若 tag 已有 release,按 tag 取回它的 id,不再 exit 1。
-      #   - 单个附件失败/超时只跳过、不阻断其余文件,也不阻断 GitHub 发布。
-      #   - step 级 timeout-minutes 兜底,绝不拖到 job 默认 6h 超时。
-      - name: Mirror release to Gitee
-        continue-on-error: true
-        timeout-minutes: 30
-        env:
-          GITEE_TOKEN: ${{ secrets.GITHUB2GITEE_DEEPX_TOKEN }}
-          GITEE_OWNER: itmisx
-          GITEE_REPO: deepx-code
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -uo pipefail
-          if [ -z "${GITEE_TOKEN}" ]; then
-            echo "未配置 GITHUB2GITEE_DEEPX_TOKEN,跳过 Gitee 发布"; exit 0
-          fi
-          API="https://gitee.com/api/v5/repos/${GITEE_OWNER}/${GITEE_REPO}"
-
-          echo "==> 在 Gitee 创建/获取发行版 ${TAG}"
-          RESP=$(curl -sS --connect-timeout 20 --max-time 60 -X POST "${API}/releases" \
-            -H "Content-Type: application/json" \
-            -d "{\"access_token\":\"${GITEE_TOKEN}\",\"tag_name\":\"${TAG}\",\"name\":\"${TAG}\",\"body\":\"deepx ${TAG} — 由 CI 自动同步自 GitHub\",\"target_commitish\":\"main\"}" || true)
-          RELEASE_ID=$(echo "$RESP" | jq -r '.id // empty')
-          if [ -z "$RELEASE_ID" ]; then
-            echo "  创建未返回 id(可能已存在),按 tag 取回…"
-            RESP=$(curl -sS --connect-timeout 20 --max-time 60 \
-              "${API}/releases/tags/${TAG}?access_token=${GITEE_TOKEN}" || true)
-            RELEASE_ID=$(echo "$RESP" | jq -r '.id // empty')
-          fi
-          if [ -z "$RELEASE_ID" ]; then
-            echo "无法创建或获取 Gitee 发行版,响应:$RESP"; exit 1
-          fi
-          echo "Gitee release id = ${RELEASE_ID}"
-
-          echo "==> 上传二进制 + checksums 到 Gitee(单文件限时 300s,失败跳过)"
-          fail=0
-          for f in dist/*.tar.gz dist/*.zip dist/checksums.txt; do
-            [ -f "$f" ] || continue
-            name=$(basename "$f")
-            echo "  上传 ${name} …"
-            code=$(curl -sS -o /tmp/gitee_up.json -w '%{http_code}' \
-              --connect-timeout 20 --max-time 300 --retry 2 --retry-delay 5 \
-              -X POST "${API}/releases/${RELEASE_ID}/attach_files" \
-              -F "access_token=${GITEE_TOKEN}" \
-              -F "file=@${f}" || echo "000")
-            case "$code" in
-              200|201) echo "    OK ${name}" ;;
-              *) echo "    失败 ${name} (http ${code}): $(head -c 300 /tmp/gitee_up.json 2>/dev/null)"; fail=1 ;;
-            esac
-          done
-          if [ "$fail" = "1" ]; then
-            echo "==> 部分文件上传失败(见上),不阻断 GitHub 发布"
-          else
-            echo "==> Gitee 同步完成"
-          fi
+      # Gitee 发行版不在这里发:境外 GitHub runner 往 Gitee 上传大文件会被限速/卡死。
+      # 改由 Gitee Go(国内 runner)在收到 mirror 推来的 tag 后跑 scripts/gitee-release.sh
+      # 构建+上传(全程国内)。详见该脚本头注释。
