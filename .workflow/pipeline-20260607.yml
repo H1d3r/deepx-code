@@ -1,16 +1,6 @@
 version: "1.0"
 name: pipeline-20260607
 displayName: gitee-release
-# Gitee Go 流水线:收到 vX.Y.Z tag 后,在国内 runner 构建 deepx 并发布到 Gitee 发行版
-#（GitHub 境外 runner 上传 Gitee 被掐流,故移到国内跑)。
-#
-# 两个要害(都踩过坑):
-#   1. 同一 stage 的 step 默认【并行】—— release 必须 dependsOn: build_golang,等编完再跑。
-#   2. step 之间是【隔离容器、不共享磁盘】—— build 把 ./dist 作为制品 BUILD_ARTIFACT 上传,
-#      release@gitee 用 upstreamArtifact 拉取后挂到发行版。
-# release@gitee 用流水线内置仓库权限发版,无需任何令牌(故无明文泄漏)。
-#
-# 手动测(非 tag 触发)会因取不到 tag 而退出;请用【tag 触发】验证,或临时把 TAG 写死。
 triggers:
   trigger: auto
   push:
