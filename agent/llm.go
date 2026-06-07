@@ -637,15 +637,22 @@ func StartStream(
 					reviewCh = make(chan bool, 1)
 				}
 				ch <- ToolCallStartMsg{Name: tc.Function.Name, Args: tc.Function.Arguments, ReviewCh: reviewCh}
-				if reviewCh != nil && !<-reviewCh {
-					ch <- ToolCallResultMsg{Name: tc.Function.Name, Output: "操作已被用户拒绝 (review 模式)", Success: false}
-					convo = append(convo, ChatMessage{
-						Role:       "tool",
-						ToolCallID: tc.ID,
-						Name:       tc.Function.Name,
-						Content:    "操作已被用户拒绝 (review 模式)",
-					})
-					continue
+				if reviewCh != nil {
+					select {
+					case approved := <-reviewCh:
+						if !approved {
+							ch <- ToolCallResultMsg{Name: tc.Function.Name, Output: "操作已被用户拒绝 (review 模式)", Success: false}
+							convo = append(convo, ChatMessage{
+								Role:       "tool",
+								ToolCallID: tc.ID,
+								Name:       tc.Function.Name,
+								Content:    "操作已被用户拒绝 (review 模式)",
+							})
+							continue
+						}
+					case <-ctx.Done():
+						return
+					}
 				}
 
 				var result tools.ToolResult
