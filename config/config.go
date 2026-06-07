@@ -65,7 +65,19 @@ type modelT struct {
 }
 
 // ProviderOptions 是配置时可选的模型供应商,顺序即 UI 展示顺序(第一个为默认)。
-var ProviderOptions = []string{"deepseek", "mimo"}
+// "custom" 为「其它」自定义:flash/pro 各自填 base_url/model/api_key/max_tokens/context_window,
+// 全部兼容 OpenAI 接口。预设供应商(deepseek/mimo)只需填 api_key,套用 modelConfig 默认。
+var ProviderOptions = []string{"deepseek", "mimo", "kimi", "qwen", "custom"}
+
+// ProviderCustom 是「其它」自定义供应商的 id。
+const ProviderCustom = "custom"
+
+// CustomDefaults:自定义供应商在 max_tokens / context_window 留空时用的通用回退值
+// (兼容多数 OpenAI 兼容端点;高级用户可在 model.yaml 里改)。
+const (
+	CustomDefaultMaxTokens     = 8192
+	CustomDefaultContextWindow = 131072
+)
 
 // modelConfig 各供应商的默认 base_url 与 flash/pro 模型 id。
 // 注意:URL 只到域名(+可选 /v1),因为请求时 agent 会自行追加 "/chat/completions"
@@ -84,6 +96,20 @@ var modelConfig = map[string]modelT{
 		FlashModel:    "mimo-v2.5",
 		ProModel:      "mimo-v2.5-pro",
 		MaxTokens:     131072,    // mimo 单次 completion 上限
+		ContextWindow: 1_048_576, // 1M
+	},
+	"kimi": {
+		URL:           "https://api.moonshot.cn/v1", // 必须带 /v1,端点为 /v1/chat/completions
+		FlashModel:    "kimi-k2.5",
+		ProModel:      "kimi-k2.6",
+		MaxTokens:     0, // 0 = 不发 max_tokens,走模型默认输出上限(见 agent.chatRequest omitempty)
+		ContextWindow: 262144, // 256K
+	},
+	"qwen": {
+		URL:           "https://dashscope.aliyuncs.com/compatible-mode/v1", // 阿里云北京;端点 /v1/chat/completions
+		FlashModel:    "qwen3.7-plus",
+		ProModel:      "qwen3.7-max",
+		MaxTokens:     0, // 0 = 不发 max_tokens,走模型默认输出上限
 		ContextWindow: 1_048_576, // 1M
 	},
 }

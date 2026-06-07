@@ -4,12 +4,58 @@ import (
 	"deepx/agent"
 	"deepx/config"
 	"fmt"
+	"strconv"
 	"strings"
 
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
+
+// setupCustomFieldDefs 定义「其它」自定义表单的字段顺序与元信息。前 5 个属 flash,后 5 个属 pro。
+var setupCustomFieldDefs = []struct {
+	label       string
+	placeholder string
+	isInt       bool
+}{
+	{"base_url", "https://api.openai.com/v1", false},
+	{"model", "gpt-4o-mini", false},
+	{"api_key", "sk-...", false},
+	{"max_tokens", "8192", true},
+	{"context_window", "131072", true},
+	{"base_url", "https://api.openai.com/v1", false},
+	{"model", "gpt-4o", false},
+	{"api_key", "sk-...", false},
+	{"max_tokens", "8192", true},
+	{"context_window", "131072", true},
+}
+
+// newSetupCustomFields 创建 10 个空的自定义字段输入框(只留 placeholder 提示,不预填当前配置 ——
+// 预填后用户改的时候还得先删,反而麻烦)。焦点放第 0 个。
+func newSetupCustomFields() []textinput.Model {
+	fields := make([]textinput.Model, len(setupCustomFieldDefs))
+	for i, def := range setupCustomFieldDefs {
+		ti := textinput.New()
+		ti.Prompt = "" // 去掉默认 "> ",避免和外层 [ ] 重复、并节省列宽
+		ti.Placeholder = def.placeholder
+		ti.CharLimit = 256
+		ti.SetWidth(40)
+		fields[i] = ti
+	}
+	if len(fields) > 0 {
+		fields[0].Focus()
+	}
+	return fields
+}
+
+// atoiOr 把字符串解析为正整数;空 / 非法 / 非正 → 回退 def。
+func atoiOr(s string, def int) int {
+	if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil && n > 0 {
+		return n
+	}
+	return def
+}
 
 // overlayCentered 把 fg(modal)叠在 bg(主 UI)上居中显示。
 // 实现:
@@ -66,60 +112,69 @@ func spliceLineCells(bg, fg string, atCol, fgW int) string {
 	return pre + fg + post
 }
 
-// setupModalBlock 只渲染 modal 本身(不放置),供 overlay 使用。
-// View() 时把这个 block 叠在 mainUI 上,所以这里不能调 lipgloss.Place 占满屏。
-func (m model) setupModalBlock() string {
-	title := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(highlightColor).
-		Render(T("setup.title"))
-
-	var hint string
-	if m.setupRequired {
-		hint = T("setup.hint.first_run")
-	} else {
-		hint = T("setup.hint.reconfig")
+// providerDisplay 把供应商 id 映射成展示名(custom → 其它/Other)。
+func providerDisplay(p string) string {
+	if p == config.ProviderCustom {
+		return T("setup.provider.custom")
 	}
-	hintBlock := lipgloss.NewStyle().Foreground(subtleColor).Render(hint)
+	return p
+}
 
-	// 模型供应商选择器:横向列出 config.ProviderOptions,选中项高亮,←/→ 切换。
-	providerLabel := lipgloss.NewStyle().Foreground(dimColor).Render(T("setup.provider_label"))
-	opts := make([]string, 0, len(config.ProviderOptions))
-	for i, p := range config.ProviderOptions {
-		if i == m.setupProviderIdx {
-			opts = append(opts, lipgloss.NewStyle().Foreground(highlightColor).Bold(true).Render("‹ "+p+" ›"))
+// curProvider 返回当前选中的供应商 id。
+func (m model) curProvider() string {
+	if m.setupProviderIdx >= 0 && m.setupProviderIdx < len(config.ProviderOptions) {
+		return config.ProviderOptions[m.setupProviderIdx]
+	}
+	return config.ProviderOptions[0]
+}
+
+// setupModalBlock 只渲染 modal 本身(不放置),供 overlay 使用。
+// 两步:setupStep==0 选供应商;==1 填配置(预设供应商单填 api_key,custom 填 10 字段表单)。
+func (m model) setupModalBlock() string {
+	// 标题 + 括号写明保存路径(去掉所有说明性提示文字)。
+	savePath := "~/.deepx/model.yaml"
+	if p, err := config.Path(); err == nil {
+		savePath = abbreviatePath(p, 48)
+	}
+	title := lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render(T("setup.title")) +
+		lipgloss.NewStyle().Foreground(dimColor).Render("  ("+fmt.Sprintf(T("setup.save_path_hint"), savePath)+")")
+
+	var body, footer string
+	if m.setupStep == 0 {
+		// 供应商竖排,选中项行首高亮标记。
+		providerLabel := lipgloss.NewStyle().Foreground(dimColor).Render(T("setup.provider_label"))
+		rows := make([]string, 0, len(config.ProviderOptions))
+		for i, p := range config.ProviderOptions {
+			if i == m.setupProviderIdx {
+				rows = append(rows, lipgloss.NewStyle().Foreground(highlightColor).Bold(true).Render("  ▸ "+providerDisplay(p)))
+			} else {
+				rows = append(rows, lipgloss.NewStyle().Foreground(subtleColor).Render("    "+providerDisplay(p)))
+			}
+		}
+		body = providerLabel + "\n" + strings.Join(rows, "\n")
+		footer = T("setup.footer.step_provider")
+	} else {
+		provName := lipgloss.NewStyle().Foreground(subtleColor).Render(T("setup.cur_provider") + " " + providerDisplay(m.curProvider()))
+		if m.curProvider() == config.ProviderCustom {
+			body = provName + "\n\n" + m.setupCustomFormBlock()
+			footer = T("setup.footer.step_custom")
 		} else {
-			opts = append(opts, lipgloss.NewStyle().Foreground(subtleColor).Render("  "+p+"  "))
+			inputLabel := lipgloss.NewStyle().Foreground(dimColor).Render(T("setup.input_label"))
+			body = provName + "\n\n" + inputLabel + "\n  " + m.setupInput.View()
+			footer = T("setup.footer.step_preset")
 		}
 	}
-	providerBlock := providerLabel + "\n  " + strings.Join(opts, " ")
 
-	inputLabel := lipgloss.NewStyle().Foreground(dimColor).Render(T("setup.input_label"))
-	inputBlock := inputLabel + "\n  " + m.setupInput.View()
-
-	var errBlock string
+	parts := []string{title, "", body}
 	if m.setupErr != "" {
-		errBlock = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("9")).
-			Render("✗ " + m.setupErr)
+		parts = append(parts, "", lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("✗ "+m.setupErr))
 	}
-
-	var footer string
-	if m.setupRequired {
-		footer = lipgloss.NewStyle().Foreground(dimColor).Render(T("setup.footer.first_run"))
-	} else {
-		footer = lipgloss.NewStyle().Foreground(dimColor).Render(T("setup.footer.reconfig"))
-	}
-
-	parts := []string{title, "", hintBlock, "", providerBlock, "", inputBlock}
-	if errBlock != "" {
-		parts = append(parts, "", errBlock)
-	}
-	parts = append(parts, "", footer)
+	parts = append(parts, "", lipgloss.NewStyle().Foreground(dimColor).Render(footer))
 
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 
-	modalWidth := 62
+	// 整框 72(含边框+内边距);内容区 = 72-2-4 = 66,容得下自定义表单每行(标签+方括号输入框)不换行。
+	modalWidth := 72
 	if maxW := m.width - 4; modalWidth > maxW {
 		modalWidth = maxW
 	}
@@ -129,6 +184,92 @@ func (m model) setupModalBlock() string {
 		Padding(1, 2).
 		Width(modalWidth).
 		Render(content)
+}
+
+// setupCustomFormBlock 渲染「其它」自定义的 10 字段表单:标签右对齐 + 方括号输入框,
+// 焦点字段行首 ▸ 并高亮括号,flash/pro 分组。常规表单观感。
+func (m model) setupCustomFormBlock() string {
+	const labelW = 14
+	var b strings.Builder
+	for i, def := range setupCustomFieldDefs {
+		if i == 0 {
+			b.WriteString(lipgloss.NewStyle().Foreground(dimColor).Bold(true).Render("Flash") + "\n")
+		}
+		if i == 5 {
+			b.WriteString("\n" + lipgloss.NewStyle().Foreground(dimColor).Bold(true).Render("Pro") + "\n")
+		}
+		focused := i == m.setupFieldIdx
+
+		marker := "  "
+		labelStyle := lipgloss.NewStyle().Foreground(subtleColor).Width(labelW).Align(lipgloss.Right)
+		bracketStyle := lipgloss.NewStyle().Foreground(dimColor)
+		if focused {
+			marker = lipgloss.NewStyle().Foreground(highlightColor).Render("▸ ")
+			labelStyle = labelStyle.Foreground(highlightColor)
+			bracketStyle = lipgloss.NewStyle().Foreground(highlightColor)
+		}
+
+		view := ""
+		if i < len(m.setupCustomFields) {
+			view = m.setupCustomFields[i].View()
+		}
+		field := bracketStyle.Render("[ ") + view + bracketStyle.Render(" ]")
+		b.WriteString(marker + labelStyle.Render(def.label) + "  " + field + "\n")
+	}
+	return b.String()
+}
+
+// buildCustomConfig 从自定义表单的 10 个字段构造 Config。
+// flash 必须填全 base_url/model/api_key;pro 的 base_url/api_key 留空则继承 flash、model 留空则同 flash。
+// max_tokens / context_window 留空用通用默认。返回 (cfg, "") 成功,(nil, errMsg) 失败。
+func (m *model) buildCustomConfig() (*config.Config, string) {
+	v := func(i int) string {
+		if i < len(m.setupCustomFields) {
+			return strings.TrimSpace(m.setupCustomFields[i].Value())
+		}
+		return ""
+	}
+	flash := config.ModelEntry{
+		BaseURL:       v(0),
+		Model:         v(1),
+		APIKey:        v(2),
+		MaxTokens:     atoiOr(v(3), config.CustomDefaultMaxTokens),
+		ContextWindow: atoiOr(v(4), config.CustomDefaultContextWindow),
+	}
+	if flash.BaseURL == "" || flash.Model == "" || flash.APIKey == "" {
+		return nil, T("setup.error.custom_flash")
+	}
+	pro := config.ModelEntry{
+		BaseURL:       v(5),
+		Model:         v(6),
+		APIKey:        v(7),
+		MaxTokens:     atoiOr(v(8), config.CustomDefaultMaxTokens),
+		ContextWindow: atoiOr(v(9), config.CustomDefaultContextWindow),
+	}
+	if pro.BaseURL == "" {
+		pro.BaseURL = flash.BaseURL
+	}
+	if pro.APIKey == "" {
+		pro.APIKey = flash.APIKey
+	}
+	if pro.Model == "" {
+		pro.Model = flash.Model
+	}
+	return &config.Config{Flash: flash, Pro: pro}, ""
+}
+
+// focusCustomField 把焦点移到第 idx 个自定义字段(环绕越界),其余 Blur。
+func (m *model) focusCustomField(idx int) {
+	n := len(m.setupCustomFields)
+	if n == 0 {
+		return
+	}
+	idx = (idx%n + n) % n
+	for i := range m.setupCustomFields {
+		m.setupCustomFields[i].Blur()
+	}
+	m.setupCustomFields[idx].Focus()
+	m.setupFieldIdx = idx
 }
 
 // submitSetup 处理 modal 内 Enter 的提交逻辑:
@@ -141,16 +282,24 @@ func (m model) setupModalBlock() string {
 //
 // 失败时设置 setupErr,modal 留着等用户重试。
 func (m *model) submitSetup() tea.Cmd {
-	val := strings.TrimSpace(m.setupInput.Value())
-	if val == "" {
-		m.setupErr = T("setup.error.empty")
-		return nil
+	provider := m.curProvider()
+
+	var cfg *config.Config
+	if provider == config.ProviderCustom {
+		built, errMsg := m.buildCustomConfig()
+		if errMsg != "" {
+			m.setupErr = errMsg
+			return nil
+		}
+		cfg = built
+	} else {
+		val := strings.TrimSpace(m.setupInput.Value())
+		if val == "" {
+			m.setupErr = T("setup.error.empty")
+			return nil
+		}
+		cfg = config.DefaultFor(provider, val) // 预设供应商:套 modelConfig 默认 + 该 key
 	}
-	provider := ""
-	if m.setupProviderIdx >= 0 && m.setupProviderIdx < len(config.ProviderOptions) {
-		provider = config.ProviderOptions[m.setupProviderIdx]
-	}
-	cfg := config.DefaultFor(provider, val) // 空/未知供应商 DefaultFor 会回退 deepseek
 	if err := config.Save(cfg); err != nil {
 		m.setupErr = fmt.Sprintf(T("setup.error.save"), err)
 		return nil
@@ -176,6 +325,9 @@ func (m *model) submitSetup() tea.Cmd {
 	m.showSetup = false
 	m.setupRequired = false
 	m.setupErr = ""
+	m.setupStep = 0
+	m.setupCustomFields = nil
+	m.setupFieldIdx = 0
 	m.setupInput.Reset()
 	m.setupInput.Blur()
 	m.input.Focus()
@@ -187,12 +339,15 @@ func (m *model) submitSetup() tea.Cmd {
 	return tea.Batch(visionProbeCmds(m.models)...)
 }
 
-// openSetupModal 给 /config 命令用:把当前面板切到 modal,允许 Esc 取消。
+// openSetupModal 给 /config 命令用:把当前面板切到 modal(从选供应商那步开始),允许 Esc 取消。
 func (m *model) openSetupModal() {
 	m.showSetup = true
 	m.setupRequired = false
 	m.setupErr = ""
+	m.setupStep = 0
+	m.setupFieldIdx = 0
+	m.setupCustomFields = nil
 	m.setupInput.SetValue("")
-	m.setupInput.Focus()
+	m.setupInput.Blur()
 	m.input.Blur()
 }

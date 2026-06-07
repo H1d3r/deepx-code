@@ -55,11 +55,16 @@ type model struct {
 	//   - setupInput      = api key 输入框
 	//   - setupErr        = 错误回显(保存失败 / 输入为空等)
 	//   - setupProviderIdx= 当前选中的模型供应商下标(config.ProviderOptions),←/→ 切换
-	showSetup        bool
-	setupRequired    bool
-	setupInput       textinput.Model
-	setupErr         string
-	setupProviderIdx int
+	//   - setupStep       = 0 选供应商 / 1 填配置(两步流程)
+	//   - setupCustomFields= 「其它」自定义的 10 个字段输入框(flash/pro 各 5);setupFieldIdx 为焦点
+	showSetup         bool
+	setupRequired     bool
+	setupInput        textinput.Model
+	setupErr          string
+	setupProviderIdx  int
+	setupStep         int
+	setupCustomFields []textinput.Model
+	setupFieldIdx     int
 
 	// activeModelRole 是上一轮 / 当前流的实际生效角色 ("flash" / "pro")。
 	// 每条新用户消息默认从 flash 起手;agent.ModelSwitchMsg 到达时更新为 pro。
@@ -1151,8 +1156,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.PasteMsg:
-		// 配置 modal 期间,转发给 setupInput(允许粘贴 API key)
+		// 配置 modal 期间:custom 表单转发给焦点字段,预设供应商转发给 setupInput(允许粘贴 key)
 		if m.showSetup {
+			if m.setupStep == 1 && m.curProvider() == config.ProviderCustom {
+				if m.setupFieldIdx >= 0 && m.setupFieldIdx < len(m.setupCustomFields) {
+					var c tea.Cmd
+					m.setupCustomFields[m.setupFieldIdx], c = m.setupCustomFields[m.setupFieldIdx].Update(msg)
+					return m, c
+				}
+				return m, nil
+			}
 			var c tea.Cmd
 			m.setupInput, c = m.setupInput.Update(msg)
 			return m, c
@@ -1201,28 +1214,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, c
 
 	case tea.KeyPressMsg:
-		// 配置 modal 处于活动状态时,按键全部路由到 setupInput,绕过主界面所有处理。
+		// 配置 modal 处于活动状态时,按键全部在这里处理,绕过主界面。两步:选供应商 / 填配置。
 		if m.showSetup {
 			switch msg.String() {
 			case "ctrl+c":
 				return m, tea.Quit
-			case "left", "right":
-				// 切换模型供应商(deepseek / mimo …)
-				n := len(config.ProviderOptions)
-				if n > 0 {
-					if msg.String() == "left" {
-						m.setupProviderIdx = (m.setupProviderIdx - 1 + n) % n
-					} else {
-						m.setupProviderIdx = (m.setupProviderIdx + 1) % n
-					}
-				}
-				return m, nil
-			case "enter":
-				cmd := m.submitSetup()
-				return m, cmd
 			case "esc":
-				// 首次启动 modal 不允许 Esc 关闭(还没有配置可用);
-				// 否则正常关闭返回主界面。
+				// 第二步 Esc → 退回选供应商;第一步 Esc → 关闭(首次启动不许关)。
+				if m.setupStep == 1 {
+					m.setupStep = 0
+					m.setupErr = ""
+					m.setupInput.Blur()
+					for i := range m.setupCustomFields {
+						m.setupCustomFields[i].Blur()
+					}
+					return m, nil
+				}
 				if m.setupRequired {
 					m.setupErr = T("setup.error.required")
 					return m, nil
@@ -1233,6 +1240,67 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.setupInput.Blur()
 				m.input.Focus()
 				return m, nil
+			}
+
+			// 第一步:选供应商(↑/↓ 竖排切换,←/→ 同效;Enter 进入填配置)。
+			if m.setupStep == 0 {
+				switch msg.String() {
+				case "up", "left", "k":
+					n := len(config.ProviderOptions)
+					if n > 0 {
+						m.setupProviderIdx = (m.setupProviderIdx - 1 + n) % n
+					}
+					return m, nil
+				case "down", "right", "j":
+					n := len(config.ProviderOptions)
+					if n > 0 {
+						m.setupProviderIdx = (m.setupProviderIdx + 1) % n
+					}
+					return m, nil
+				case "enter":
+					m.setupStep = 1
+					m.setupErr = ""
+					if m.curProvider() == config.ProviderCustom {
+						m.setupCustomFields = newSetupCustomFields()
+						m.setupFieldIdx = 0
+					} else {
+						m.setupInput.SetValue("")
+						m.setupInput.Focus()
+					}
+					return m, nil
+				}
+				return m, nil
+			}
+
+			// 配置输入统一禁空格:url / model / api_key / 数字都不含空格,误触/粘错直接挡掉
+			//(保存时另有 strings.TrimSpace 兜底首尾)。
+			if s := msg.String(); s == " " || s == "space" {
+				return m, nil
+			}
+
+			// 第二步 · custom:10 字段表单(Tab/↑↓ 切字段,Enter 保存)。
+			if m.curProvider() == config.ProviderCustom {
+				switch msg.String() {
+				case "enter":
+					return m, m.submitSetup()
+				case "tab", "down":
+					m.focusCustomField(m.setupFieldIdx + 1)
+					return m, nil
+				case "shift+tab", "up":
+					m.focusCustomField(m.setupFieldIdx - 1)
+					return m, nil
+				}
+				if m.setupFieldIdx >= 0 && m.setupFieldIdx < len(m.setupCustomFields) {
+					var c tea.Cmd
+					m.setupCustomFields[m.setupFieldIdx], c = m.setupCustomFields[m.setupFieldIdx].Update(msg)
+					return m, c
+				}
+				return m, nil
+			}
+
+			// 第二步 · 预设供应商:单 api_key 字段(Enter 保存)。
+			if msg.String() == "enter" {
+				return m, m.submitSetup()
 			}
 			var c tea.Cmd
 			m.setupInput, c = m.setupInput.Update(msg)

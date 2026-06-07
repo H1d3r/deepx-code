@@ -2,7 +2,9 @@
 
 # deepx-code
 
-**DeepSeek 原生、兼容 OpenAI 接口的终端编程 Agent（已支持小米 MiMo）—— 单二进制、缓存友好、内置代码图谱与本地 OCR**
+**DeepSeek 原生、兼容 OpenAI 接口的终端编程 Agent —— 单二进制、缓存友好、内置代码图谱与本地 OCR**
+
+**已预置 DeepSeek · 小米 MiMo · Kimi · 通义千问,并支持任意自定义 OpenAI 兼容模型**
 
 [![Go](https://img.shields.io/badge/built%20with-Go-00ADD8?logo=go&logoColor=white)](https://go.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Release](https://img.shields.io/github/v/release/itmisx/deepx-code?color=success)](https://github.com/itmisx/deepx-code/releases) [![Stars](https://img.shields.io/github/stars/itmisx/deepx-code?style=flat)](https://github.com/itmisx/deepx-code/stargazers) ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 

@@ -480,8 +480,27 @@ var translations = map[string]map[Lang]string{
 			"Saves take effect immediately; Esc to cancel.\n" +
 			"To change base_url / model id only, edit ~/.deepx/model.yaml directly and restart.",
 	},
-	"setup.provider_label": {LangZH: "模型提供商 (←/→ 切换):", LangEN: "Model provider (←/→ to switch):"},
-	"setup.input_label":    {LangZH: "API key:", LangEN: "API key:"},
+	"setup.provider_label":  {LangZH: "选择模型提供商 (↑/↓ 切换):", LangEN: "Choose model provider (↑/↓ to switch):"},
+	"setup.input_label":     {LangZH: "API key:", LangEN: "API key:"},
+	"setup.provider.custom": {LangZH: "其它(自定义)", LangEN: "Other (custom)"},
+	"setup.cur_provider":    {LangZH: "提供商:", LangEN: "Provider:"},
+	"setup.save_path_hint":  {LangZH: "保存在 %s", LangEN: "saved to %s"},
+	"setup.error.custom_flash": {
+		LangZH: "Flash 模型需填全 base_url / model / api_key",
+		LangEN: "Flash model needs base_url / model / api_key",
+	},
+	"setup.footer.step_provider": {
+		LangZH: "↑/↓ 选择 · Enter 下一步 · Esc 取消 · Ctrl+C 退出",
+		LangEN: "↑/↓ select · Enter next · Esc cancel · Ctrl+C quit",
+	},
+	"setup.footer.step_preset": {
+		LangZH: "Enter 保存 · Esc 返回上一步 · Ctrl+C 退出",
+		LangEN: "Enter save · Esc back · Ctrl+C quit",
+	},
+	"setup.footer.step_custom": {
+		LangZH: "Tab/↑↓ 切换字段 · Enter 保存 · Esc 返回 · Ctrl+C 退出",
+		LangEN: "Tab/↑↓ fields · Enter save · Esc back · Ctrl+C quit",
+	},
 	"setup.error.empty": {
 		LangZH: "API key 不能为空",
 		LangEN: "API key cannot be empty",

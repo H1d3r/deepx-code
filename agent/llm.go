@@ -201,8 +201,10 @@ type ToolCallFunc struct {
 }
 
 type chatRequest struct {
-	Model         string                 `json:"model"`
-	MaxTokens     int                    `json:"max_tokens"`
+	Model string `json:"model"`
+	// omitempty:max_tokens=0 时不发这个字段,让模型走自己的默认输出上限
+	// (不同模型默认上限差很多,config 里某些供应商故意留 0 用默认,见 config.modelConfig)。
+	MaxTokens     int                    `json:"max_tokens,omitempty"`
 	Stream        bool                   `json:"stream"`
 	StreamOptions *streamOptions         `json:"stream_options,omitempty"`
 	Messages      []ChatMessage          `json:"messages"`

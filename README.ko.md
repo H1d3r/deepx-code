@@ -2,7 +2,9 @@
 
 # deepx-code
 
-**DeepSeek 네이티브, OpenAI 호환 터미널 코딩 에이전트(Xiaomi MiMo 지원) —— 단일 바이너리, 캐시 친화적, 코드 그래프와 로컬 OCR 내장**
+**DeepSeek 네이티브, OpenAI 호환 터미널 코딩 에이전트 —— 단일 바이너리, 캐시 친화적, 코드 그래프와 로컬 OCR 내장**
+
+**DeepSeek · Xiaomi MiMo · Kimi · Qwen 프리셋 제공, 모든 커스텀 OpenAI 호환 모델 지원**
 
 [![Go](https://img.shields.io/badge/built%20with-Go-00ADD8?logo=go&logoColor=white)](https://go.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Release](https://img.shields.io/github/v/release/itmisx/deepx-code?color=success)](https://github.com/itmisx/deepx-code/releases) [![Stars](https://img.shields.io/github/stars/itmisx/deepx-code?style=flat)](https://github.com/itmisx/deepx-code/stargazers) ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 

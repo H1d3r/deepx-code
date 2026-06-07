@@ -2,7 +2,9 @@
 
 # deepx-code
 
-**DeepSeek ネイティブ・OpenAI 互換のターミナル向けコーディングエージェント（Xiaomi MiMo 対応済み）—— 単一バイナリ・キャッシュフレンドリー・コードグラフとローカル OCR を内蔵**
+**DeepSeek ネイティブ・OpenAI 互換のターミナル向けコーディングエージェント —— 単一バイナリ・キャッシュフレンドリー・コードグラフとローカル OCR を内蔵**
+
+**DeepSeek・Xiaomi MiMo・Kimi・Qwen をプリセット、任意の OpenAI 互換モデルにも対応**
 
 [![Go](https://img.shields.io/badge/built%20with-Go-00ADD8?logo=go&logoColor=white)](https://go.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Release](https://img.shields.io/github/v/release/itmisx/deepx-code?color=success)](https://github.com/itmisx/deepx-code/releases) [![Stars](https://img.shields.io/github/stars/itmisx/deepx-code?style=flat)](https://github.com/itmisx/deepx-code/stargazers) ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 
