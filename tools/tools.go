@@ -535,4 +535,23 @@ var Tools = []Tool{
 		Executor: nil,
 		ReadOnly: true,
 	},
+	{
+		Name: "Remember",
+		Description: "把用户的**持久性**偏好 / 约定写入记忆文件(AGENTS.md),下次启动 / 新对话时自动注入,长期生效。\n\n" +
+			"**何时用**:用户表达跨轮、长期有效的偏好或约定时(措辞如「以后都…」「记住…」「不要再…」「我习惯…」「这个项目用…」)。写完向用户确认记了什么、记到哪一级。\n\n" +
+			"**何时不用**:一次性指令、显而易见的事、代码/配置本身已表达的——这些别记,免得污染记忆。\n\n" +
+			"**scope 判定**:与「人 / 工作习惯」相关、跨项目都成立 → global(写 ~/.deepx/AGENTS.md);与「这个代码库 / 技术栈 / 目录规范」相关、仅本仓库成立 → project(写 <workspace>/AGENTS.md)。判据:这条偏好**依不依赖当前代码库**——依赖=project,不依赖=global。拿不准就先用 AskUser 问用户记成哪一级。\n\n" +
+			"content 写成一句清晰、可执行的偏好(简洁,别长篇)。",
+		Parameters: ToolParam{
+			Type: "object",
+			Properties: map[string]PropDef{
+				"scope":   {Type: "string", Enum: []string{"global", "project"}, Description: "global=全局(所有项目)/ project=仅当前项目"},
+				"content": {Type: "string", Description: "要记住的偏好,一句话"},
+			},
+			Required: []string{"scope", "content"},
+		},
+		// Executor 为 nil:在 agent/llm.go 工具循环里拦截(需要 workspace 解析项目级路径)。
+		Executor: nil,
+		ReadOnly: false, // 会写 AGENTS.md;plan 只读模式下不可用
+	},
 }

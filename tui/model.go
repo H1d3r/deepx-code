@@ -684,6 +684,10 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 		m.appendChat("System", hint)
 	}
 
+	// 偏好快照:启动时读一次 AGENTS.md 冻结进缓存,本会话每轮复用(只在压缩/重启时再刷新)。
+	// 必须在 detectRestartCompaction 之前 —— 它算前缀签名要包含当前偏好。
+	agent.RefreshPreferences(m.workspace)
+
 	// 重启检测:若 prompt/工具/mcp 相对上次会话变了、历史又够大,标记需在首请求前压缩
 	//(此刻前缀已失效,趁机压缩,且复刻旧前缀命中热缓存 —— 见 prefix_cache.go)。
 	m.detectRestartCompaction()
@@ -2521,6 +2525,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 摘要进 m.summary(每轮注入 system prompt 尾部),不再作为 history 消息;
 		// history 只截断保留尾部。
 		m.summary = msg.summary
+		// 压缩点重建系统提示词(缓存本就会 miss),顺势刷新 AGENTS.md 快照:会话中途写入的偏好在此生效。
+		agent.RefreshPreferences(m.workspace)
 		m.history = append([]agent.ChatMessage(nil), m.history[msg.cutIdx:]...)
 
 		// 锁定态:压缩可能把 /model 锁定提示对压掉,在截断后历史最前重注一对,

@@ -71,6 +71,8 @@ func (m *model) startNewConversation() {
 		m.appendChat("System", "新建对话失败:"+err.Error())
 		return
 	}
+	// 新对话视作一次"启动":刷新 AGENTS.md 快照,让新会话用上最新偏好。
+	agent.RefreshPreferences(m.workspace)
 	m.loadCurrentConversation()
 	m.appendChat("System", T("session.new"))
 }

@@ -438,6 +438,7 @@ func coreSystemPrompt(workspace, skillCatalog string) string {
 - 改代码前先 inspect 相关文件、理解上下文,改动最小化。编辑时保持现有风格,不顺手做不相关的重构,默认保持向后兼容(除非用户明确要求)。
 - 查代码符号(函数/类型/方法)的定义、调用关系、实现者、继承请优先用 CodeGraph工具(更准、不误命中注释/字符串)。
 - 需要用户在**有限、明确的选项**里做选择或拍板时(需求确认、技术选型、A/B 方案、是否包含某功能等),**必须调用 AskUser 工具弹窗让用户勾选**,可一次问多道;不要把选项写成文字列表让用户敲字回复。开放性、需要自由表达的问题才用文字提问。
+- 用户表达**持久性**偏好/约定时(「以后都…」「记住…」「不要再…」「我习惯…」「这个项目用…」),调用 **Remember** 工具写入 AGENTS.md(跨项目的习惯=global,本仓库的约定=project),长期生效;一次性指令不要记。
 
 # 技能skill使用
 - 实现功能、修复 bug、重构或 review 代码时,遵循本轮用户消息尾部「工作模式」指明的方法论 skill(加载其正文并执行),不要使用未指明的其它工作模式 skill。
@@ -485,6 +486,11 @@ func coreSystemPrompt(workspace, skillCatalog string) string {
 // 失效点只从摘要开始(详见前缀缓存优化设计)。
 func BuildSystemPrompt(workspace, skillCatalog, summary string) string {
 	base := coreSystemPrompt(workspace, skillCatalog)
+	// 持久偏好/项目约定:读会话内冻结的快照(currentPrefs),只在启动 / 压缩时由 RefreshPreferences 刷新,
+	// 中途每轮复用同一份 → 前缀稳定、缓存命中。会话中途写入的 AGENTS.md 下次压缩/重启才生效。
+	if prefs := currentPrefs(); prefs != "" {
+		base += "\n\n# 用户偏好 / 项目约定(持久记忆,需严格遵循)\n" + prefs
+	}
 	if summary != "" {
 		base += "\n\n# 会话摘要(此前对话的压缩,延续上下文)\n" + summary
 	}
@@ -731,6 +737,23 @@ func StartStream(
 							}
 						case <-ctx.Done():
 							return
+						}
+					}
+				case "Remember":
+					// 持久化用户偏好到 AGENTS.md(global=~/.deepx,project=workspace),下次启动注入。
+					scope, content, perr := parseRememberArgs(tc.Function.Arguments)
+					if perr != nil {
+						result = tools.ToolResult{Output: perr.Error(), Success: false}
+					} else if path, serr := saveMemory(scope, content, workspace); serr != nil {
+						result = tools.ToolResult{Output: "记忆保存失败:" + serr.Error(), Success: false}
+					} else {
+						level := "全局"
+						if scope == "project" {
+							level = "本项目"
+						}
+						result = tools.ToolResult{
+							Output:  fmt.Sprintf("已记住(%s):%s\n(写入 %s;本会话内我已知晓,正式注入系统提示词在下次压缩 / 重启后)", level, content, path),
+							Success: true,
 						}
 					}
 				case "CreatePlan":
