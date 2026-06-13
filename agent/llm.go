@@ -1166,6 +1166,13 @@ func isReviewable(name string) bool {
 	return name == "Write" || name == "Update" || name == "Bash"
 }
 
+// blockedInPlan 判断工具在 plan 模式下是否被禁止执行(只读规划,禁一切写/副作用操作)。
+// plan 模式不裁剪工具表(保持 prefix cache 稳定),全靠 system prompt 让 LLM 自觉;
+// 这里是执行层的硬兜底:模型不听话直接调 Write/Update/Bash 时(issue #108),拦下来。
+func blockedInPlan(name string) bool {
+	return name == "Write" || name == "Update" || name == "Bash"
+}
+
 // fileToolNames 是用于维护 lastFile(模型当前正在编辑的文件)的工具,给 Update 漏 path 时兜底。
 // 只取真正"在读写编辑目标文件"的:Read（打开待编辑文件)/ Write / Update。刻意排除:
 //   - Grep:path 常是目录或"查别的文件",会把 lastFile 污染成非编辑目标
@@ -1188,6 +1195,13 @@ func executeTool(tc ToolCall, mode AgentMode, lastFile *string) tools.ToolResult
 	if !allowedInMode(*t, mode) {
 		return tools.ToolResult{
 			Output:  fmt.Sprintf("工具 %s 在当前模式 (%s) 不可用", t.Name, mode),
+			Success: false,
+		}
+	}
+	// plan 模式硬拦:只读规划,禁止写/副作用操作(issue #108)。
+	if mode == AgentMode_Plan && blockedInPlan(t.Name) {
+		return tools.ToolResult{
+			Output:  fmt.Sprintf("当前是 plan 模式,禁止 %s(只读规划,不修改文件 / 不执行命令)。请先用 /auto 切换到 auto 模式再执行该操作。", t.Name),
 			Success: false,
 		}
 	}
