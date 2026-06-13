@@ -490,6 +490,16 @@ func (m model) queuedDisplayLines(width int) []string {
 //   - 空闲:一个暗色 "● 就绪",和运行态形成明显对比。
 func (m model) statusFooterLine(width int) string {
 	dim := lipgloss.NewStyle().Foreground(subtleColor).Render
+	// 压缩前台期间(手动/自动):转 spinner +「压缩中…」;输入不丢,排队待压缩后自动发。
+	if m.compactingFG {
+		head := m.spinner.View()
+		word := lipgloss.NewStyle().Foreground(statusColor("thinking")).Bold(true).Render("压缩中…")
+		hint := " · 消息将在压缩后自动发出"
+		if len(m.queuedInput) > 0 {
+			hint = " · 已排队 " + strconv.Itoa(len(m.queuedInput)) + " 条,压缩后自动发出"
+		}
+		return head + " " + word + dim(hint)
+	}
 	if !m.streaming {
 		// 上一轮出错:红色 ✗ 出错(chat 里已有具体错误信息)。
 		if m.status == "error" {
