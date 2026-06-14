@@ -12,6 +12,8 @@ variables:
   GOPROXY: https://goproxy.cn,direct
   GOTOOLCHAIN: auto
   GOSUMDB: sum.golang.google.cn
+  global:
+    - CI_TOKEN
 stages:
   - name: stage-02a7a941
     displayName: golangbuild
@@ -27,13 +29,40 @@ stages:
           # 一整行(Gitee Go 每条 command 是独立 shell,变量必须同条):
           # 反查当前 commit 上的 tag → 写进 GITEE_PARAMS 供 release 引用 → DRY_RUN 只编出 ./dist。
           - 'command -v zip >/dev/null 2>&1 || apt-get install -y zip; git fetch --tags --force >/dev/null 2>&1 || true; TAG="$(git describe --tags --exact-match ${GITEE_COMMIT:-HEAD} 2>/dev/null)"; [ -n "$TAG" ] || { echo "当前 commit 无 tag(请用 tag 触发,或临时写死 TAG)"; exit 1; }; echo "RELEASE_TAG=$TAG" >> GITEE_PARAMS; echo "RELEASE_VER=${TAG#v}" >> GITEE_PARAMS; DRY_RUN=1 TAG="$TAG" bash scripts/gitee-release.sh; ls -la dist/'
+          # 清理历史附件:用流水线全局变量 CI_TOKEN(variables.global 注入)作 access_token。
+          # 保留最近 KEEP 版、删更老版本附件;每个请求打印 HTTP 码。全程 || true / 不影响构建产物。
+          - |
+            KEEP="${KEEP:-1}"
+            API="https://gitee.com/api/v5/repos/itmisx/deepx-code"
+            TOK="${CI_TOKEN:-}"
+            if [ -z "$TOK" ]; then
+              echo "==> [清理] 未拿到 CI_TOKEN(检查 variables.global + UI 通用变量是否配好)→ 跳过"
+            else
+              echo "==> [清理] 拿到令牌(长度 ${#TOK})调 API,保留最近 ${KEEP} 个版本,清理更老的"
+              # 取最近 100 个 release 的 id(倒序,newest 在前)。靠 "id":N,"tag_name" 邻接抠顶层 id,
+              # 避开嵌套 author.id / assets[].id 的污染(gitee v5 字段顺序 id 紧跟 tag_name)。
+              LIST="$(curl -sS --max-time 60 -w '\n[HTTP %{http_code}]' "${API}/releases?access_token=${TOK}&page=1&per_page=100&direction=desc" || true)"
+              echo "   GET /releases → $(printf '%s' "$LIST" | tail -1)"
+              IDS="$(printf '%s' "$LIST" | grep -oE '"id":[[:space:]]*[0-9]+,[[:space:]]*"tag_name"' | grep -oE '[0-9]+')"
+              n=0; del=0
+              for RID in $IDS; do
+                n=$((n+1)); [ "$n" -le "$KEEP" ] && continue
+                AIDS="$(curl -sS --max-time 60 "${API}/releases/${RID}/attach_files?access_token=${TOK}" | grep -oE '"id":[[:space:]]*[0-9]+' | grep -oE '[0-9]+')"
+                for AID in $AIDS; do
+                  code="$(curl -sS --max-time 60 -o /dev/null -w '%{http_code}' -X DELETE "${API}/releases/${RID}/attach_files/${AID}?access_token=${TOK}" || echo 000)"
+                  echo "   DELETE ${RID}/${AID} → HTTP ${code}"
+                  { [ "$code" = "204" ] || [ "$code" = "200" ]; } && del=$((del+1))
+                done
+              done
+              echo "==> [清理] 完成,成功删 ${del} 个(扫描 ${n} 个版本,保留最近 ${KEEP} 个)"
+            fi
         # 把 ./dist 作为制品上传,供下游 release 跨容器取用
         artifacts:
           - name: BUILD_ARTIFACT
             path:
               - ./dist
         caches:
-          - /go/pkg/mod          # 模块缓存(含下载的 go1.25.8 工具链)
+          - /go/pkg/mod # 模块缓存(含下载的 go1.25.8 工具链)
           - /root/.cache/go-build # Go 编译缓存:下次发版不再从零重编依赖,显著提速
         notify: []
         strategy:
