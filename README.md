@@ -28,6 +28,7 @@
 - **📎 `@` 文件 / 目录引用** —— 输入框打 `@` 弹本地模糊路径选择器，选中即把 `@路径` 塞进消息；模型按需调 Read（文件）/ List（目录），精准给上下文不用全塞。
 - **🧠 双模型自动路由** —— flash 起手省钱，复杂任务自动升 pro；也可用 `/model flash|pro` 锁定模型、`/auto` `/plan` `/review` 切模式。
 - **🗂️ 顺序 Todo + 并发 Plan DAG** —— 多步任务用可见待办清单逐步勾选；可并行的独立子任务拆成 DAG 派并发子 agent。
+- **🔁 可复用 Workflow** —— 用 JS 脚本把多 agent 流程固化下来反复跑(`agent()` / `parallel()` / `pipeline()`):多视角审查、扇出研究、流水线、循环到无新增等。`/ultracode <描述>` 让模型自动生成并保存,`/workflow <名>` 运行;真并发、可中断 resume、结构化输出走工具强约束、运行前预列全部阶段并实时显示耗时。对齐 Claude Code 的 workflow 脚本约定,脚本可直接互用。
 - **💾 无损会话持久化** —— gob 完整保留 `tool_calls` / `tool results` / `reasoning_content`，重启无缝续接；超窗自动分层压缩。
 - **🔌 MCP + Skill 生态** —— 原生 MCP；兼容 Claude 的 skill 目录，已有 skill 直接复用。
 - **🛡️ 审核模式** —— 写文件 / 执行 Shell 默认需人工确认，安全可控。
@@ -164,10 +165,11 @@ deepx exec "把 README 的功能列表翻译成英文,写到 README.en.md"
 </details>
 
 <details>
-<summary><b>任务规划：Todo（顺序）vs Plan DAG（并发）</b></summary>
+<summary><b>任务规划：Todo（顺序）vs Plan DAG（并发）vs Workflow（可复用脚本）</b></summary>
 
-- **Todo** —— 多步、强顺序、强上下文的任务（如从零搭一个应用）：模型用可见待办清单列出步骤、逐项勾选，自己一步步执行，给你实时进度。
-- **CreatePlan（Plan DAG）** —— 真正可并行、彼此独立的扇出任务：拆成 DAG，按依赖关系派并发子 agent，每个节点独立选 flash / pro，最后汇总。
+- **Todo** —— 多步、强顺序、强上下文的任务（如从零搭一个应用）：模型用可见待办清单列出步骤、逐项勾选,自己一步步执行,给你实时进度。
+- **CreatePlan（Plan DAG）** —— 当下这一轮里真正可并行、彼此独立的扇出任务：拆成 DAG,按依赖关系派并发子 agent,每个节点独立选 flash / pro,最后汇总。
+- **Workflow（可复用脚本）** —— 把一套**会重复跑**的多 agent 流程固化成 JS 脚本(`agent()` / `parallel()` / `pipeline()` / `phase()`),存进 `.deepx/workflows/` 反复用。和上面两者的区别:Todo/Plan 是模型每轮临时规划;Workflow 是事先写定、可复用、可中断 resume 的固定流程。`/ultracode <描述>` 自动生成,`/workflow <名>` 运行。
 
 ```
 CreatePlan
@@ -244,6 +246,7 @@ CreatePlan
 | `/web-config`                        | 弹窗设置 web 面板绑定 IP 与端口（填「IP [端口]」，空格分隔；IP 留空/`127.0.0.1`=仅本机，`0.0.0.0`=局域网手机/平板可访问，端口可省=随机）。保存即热生效并显示新地址，无需重启；配置存入会话 `meta.json`，访问令牌按会话固定、跨重启不变。⚠️ 该面板可控制会话、执行命令，且为明文 HTTP，对外暴露仅限可信局域网 |
 | `/sandbox`                           | 沙箱模式：`off`（关闭）/ `native`（默认，OS 隔离：macOS Seatbelt、Linux bubblewrap，写操作限定在 workspace + 进程隔离；无 OS 机制的平台退回软策略黑名单）/ `docker`（容器隔离，`/sandbox docker <镜像>`）                                                                                                    |
 | `/working-mode`                      | 工作模式（方法论）：`karpathy`（默认，务实工匠）/ `openspec`（规格驱动）/ `superpowers`（全流程严谨）；弹窗选择，也可 `/working-mode kp\|spec\|sp` 直切。三种模式互斥——选中一种会禁用另外两种对应的 skill，避免方法论混搭。切换后存入会话，每轮自动注入提示且不污染历史                                      |
+| `/ultracode` `/workflow` `/workflows` | workflow(JS 多 agent 编排):`/ultracode <描述>` 让模型生成并保存一个 workflow,`/workflow <名> [k=v]` 运行(运行前需确认),`/workflows` 列出已有                                                                                                                                                                |
 | `/lang`                              | 切换界面语言（中 / 英）                                                                                                                                                                                                                                                                                      |
 | `/mcp-list` `/mcp-add` `/mcp-delete` | 管理 MCP server                                                                                                                                                                                                                                                                                              |
 | `/skills` `/config` `/mode`          | 列出 skill / 重配 key / 查看模式                                                                                                                                                                                                                                                                             |

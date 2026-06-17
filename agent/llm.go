@@ -698,9 +698,10 @@ func StartStream(
 			//   - SwitchModel        → 改本轮 currentEntry / role,通过 ModelSwitchMsg 通知 UI
 			// 拦截后仍要给 LLM 一个 fake tool result,让 OpenAI 工具循环能正常推进。
 			for _, tc := range toolCalls {
-				// review 模式:对 Write/Update/Bash 发起审核
+				// review 模式:对 Write/Update/Bash 发起审核。
+				// Workflow(run) 无论何种模式都强制确认:它会执行模型生成的脚本(进而派子 agent)。
 				var reviewCh chan bool
-				if mode == AgentMode_Review && isReviewable(tc.Function.Name) {
+				if (mode == AgentMode_Review && isReviewable(tc.Function.Name)) || isWorkflowRun(tc) {
 					reviewCh = make(chan bool, 1)
 				}
 				ch <- ToolCallStartMsg{Name: tc.Function.Name, Args: tc.Function.Arguments, ReviewCh: reviewCh}
@@ -760,6 +761,10 @@ func StartStream(
 							Success: true,
 						}
 					}
+				case "Workflow":
+					// 创建/运行/列出 workflow。run 已在上方经 reviewCh 确认;run 期间的进度
+					// 经 ch 以 TokenMsg 流式呈现,结果回给模型续写总结。
+					result = handleWorkflowTool(ctx, tc, models, mode, workspace, skillCatalog, ch)
 				case "CreatePlan":
 					plans, perr := parseCreatePlanArgs(tc.Function.Arguments)
 					if perr != nil {

@@ -19,7 +19,9 @@ package skill
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -55,11 +57,17 @@ type Metadata struct {
 type Loader struct {
 	WorkspaceDirs []string // 项目级,workspace 内的多个候选目录
 	GlobalDirs    []string // 用户级,$HOME 下的多个候选目录
+
+	// builtins 是从 embed 直接加载的内置 skill(不落盘),由 New 注入。
+	// 优先级最低:磁盘上的同名 skill(用户自定义)会覆盖它。这样内置 skill 与全局
+	// 用户 skill 分离、互不污染。
+	builtins []Skill
 }
 
 // New 构造 loader。传 nil 表示该层无目录(只用单层也合法)。
+// 内置 skill 通过 BuiltinSkills() 从 embed 加载并入,不依赖磁盘。
 func New(workspaceDirs, globalDirs []string) *Loader {
-	return &Loader{WorkspaceDirs: workspaceDirs, GlobalDirs: globalDirs}
+	return &Loader{WorkspaceDirs: workspaceDirs, GlobalDirs: globalDirs, builtins: BuiltinSkills()}
 }
 
 // AllDirs 返回 Loader 持有的所有目录(按扫描顺序),给 /skills 空目录提示用。
@@ -74,6 +82,10 @@ func (l *Loader) AllDirs() []string {
 // 同名:workspace 覆盖 global;组内后扫覆盖先扫。
 func (l *Loader) List() []Metadata {
 	seen := make(map[string]Metadata)
+	// 内置最低优先级,先放(会被磁盘同名覆盖)
+	for _, s := range l.builtins {
+		seen[s.Name] = Metadata{Name: s.Name, Description: s.Description, Scope: "builtin", Path: s.Path}
+	}
 	// 先 global(后被 workspace 覆盖)
 	for _, dir := range l.GlobalDirs {
 		scanDir(dir, "global", seen)
@@ -138,7 +150,14 @@ func (l *Loader) Load(name string) (*Skill, error) {
 			return readFull(p, "global")
 		}
 	}
-	return nil, fmt.Errorf("skill %q 未找到 (tried: %s)", name, strings.Join(triedPaths, ", "))
+	// 磁盘没有 → 回退内置(从 embed 加载,优先级最低)
+	for i := range l.builtins {
+		if l.builtins[i].Name == name {
+			s := l.builtins[i]
+			return &s, nil
+		}
+	}
+	return nil, fmt.Errorf("skill %q 未找到 (tried: %s, builtins)", name, strings.Join(triedPaths, ", "))
 }
 
 // readMeta 只读 frontmatter,不读 body —— List 场景下省 I/O。
@@ -163,12 +182,27 @@ func readMeta(path string) (Metadata, error) {
 
 // readFull 读完整 SKILL.md(frontmatter + body)。
 func readFull(path, scope string) (*Skill, error) {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	fm, body, err := splitFrontmatter(f)
+	s, err := parseSkillContent(data)
+	if err != nil {
+		return nil, err
+	}
+	if s.Name == "" {
+		s.Name = filepath.Base(filepath.Dir(path))
+	}
+	s.Scope = scope
+	s.Path = path
+	return s, nil
+}
+
+// parseSkillContent 解析一段 SKILL.md 内容(frontmatter + body)成 Skill。
+// 不设 Name 兜底 / Scope / Path —— 由调用方按来源(磁盘 / embed)补齐。
+// 供磁盘读取(readFull)和内置加载(BuiltinSkills)共用,统一解析口径。
+func parseSkillContent(data []byte) (*Skill, error) {
+	fm, body, err := splitFrontmatter(bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
@@ -178,20 +212,15 @@ func readFull(path, scope string) (*Skill, error) {
 			return nil, fmt.Errorf("解析 frontmatter: %w", err)
 		}
 	}
-	if s.Name == "" {
-		s.Name = filepath.Base(filepath.Dir(path))
-	}
 	s.Body = body
-	s.Scope = scope
-	s.Path = path
 	return &s, nil
 }
 
 // splitFrontmatter 从文件中分出 yaml frontmatter 和 markdown body。
 // 约定格式: "---\n<yaml>\n---\n<body>"。
 // 没有 frontmatter(文件首行非 "---") → 全文当 body,fm 返回空串。
-func splitFrontmatter(f *os.File) (fm, body string, err error) {
-	sc := bufio.NewScanner(f)
+func splitFrontmatter(r io.Reader) (fm, body string, err error) {
+	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024) // 1MB 单行上限,够任何合理 SKILL.md
 	var lines []string
 	for sc.Scan() {

@@ -777,6 +777,11 @@
               <td class="vs-old"><span class="vs-badge vs-badge-old">无方法论开关</span>时而过度设计、时而草率收尾，只能每轮在 prompt 里反复交代「别过度设计」「先写测试」</td>
               <td class="vs-new"><span class="vs-badge vs-badge-new">工作模式</span>一命令锁定 karpathy / openspec / superpowers，三种互斥防混搭，每轮自动注入、切换即时生效</td>
             </tr>
+            <tr>
+              <td>可复用的多步流程</td>
+              <td class="vs-old"><span class="vs-badge vs-badge-old">每轮临时规划</span>同一套审查 / 研究流程每次都得重新交代，没法固化复用</td>
+              <td class="vs-new"><span class="vs-badge vs-badge-new">Workflow</span>JS 脚本固化多 agent 流程（parallel / pipeline），/ultracode 生成、/workflow 运行，真并发 + 可 resume，兼容 Claude Code 脚本</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -786,7 +791,7 @@
     <section>
       <div class="container">
         <span class="section-label reveal">核心能力</span>
-        <h2 class="reveal reveal-d1">九大设计亮点</h2>
+        <h2 class="reveal reveal-d1">十大设计亮点</h2>
         <p class="section-sub reveal reveal-d2">
           每个特性都在解决一个实际问题，不是堆功能。
         </p>
@@ -814,6 +819,16 @@
             <p>
               多步顺序任务用可见待办清单逐步勾选，进度实时可见；可并行的独立子任务
               拆成 DAG，deepx 按依赖并发跑子 agent，每个节点独立选 flash / pro。
+            </p>
+          </div>
+          <div class="feat-card reveal reveal-d4">
+            <div class="feat-icon">🔁</div>
+            <h3>可复用 Workflow</h3>
+            <p>
+              用 JS 脚本把会重复跑的多 agent 流程固化下来（agent / parallel /
+              pipeline）：多视角审查、扇出研究、流水线等。/ultracode 让模型自动生成、
+              /workflow 运行；真并发、可中断 resume、结构化输出走工具强约束，运行前预列全部阶段。兼容
+              Claude Code 脚本约定。
             </p>
           </div>
           <div class="feat-card reveal reveal-d4">

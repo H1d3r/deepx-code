@@ -9,6 +9,7 @@ import (
 	"deepx/skill"
 	"deepx/tools"
 	"deepx/web"
+	"deepx/workflow"
 	"fmt"
 	"net"
 	"net/url"
@@ -179,6 +180,9 @@ type model struct {
 	// 进程内不刷新 — 用户增删 skill 后重启 deepx。
 	skillLoader  *skill.Loader
 	skillCatalog string
+
+	// workflowLoader 扫 .deepx/workflows/*.js,/workflow 命令据此加载并跑脚本。
+	workflowLoader *workflow.Loader
 
 	// summary 是会话压缩摘要(内存态),每轮注入 system prompt 尾部(见 BuildSystemPrompt)。
 	// 不再作为 history[0] 消息存在;持久化在 state.json 的 summary 字段。
@@ -505,7 +509,7 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 	// workspace 优先于 global,同名覆盖。任一目录不存在不报错。
 	// 用户没建任何 skill 时 catalog 为空,system prompt 不挂"Available Skills"段。
 	home, _ := os.UserHomeDir()
-	skill.ExtractBuiltins(home) // 解压内嵌 skill 到 ~/.deepx/skills/
+	skill.CleanupExtractedBuiltins(home) // 一次性清掉旧版解压到 ~/.deepx/skills 的内置副本(现改为从 embed 加载)
 	workspaceSkillDirs := []string{
 		filepath.Join(wd, ".deepx", "skills"),
 	}
@@ -517,6 +521,10 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 	loader := skill.New(workspaceSkillDirs, globalSkillDirs)
 	tools.SetSkillLoader(loader)
 	skillCatalog := buildSkillCatalog(loader)
+
+	// workflow:.deepx/workflows/*.js(项目级覆盖全局),/workflow 命令加载执行。
+	wfProjectDirs, wfGlobalDirs := workflow.DefaultDirs(wd, home)
+	workflowLoader := workflow.New(wfProjectDirs, wfGlobalDirs)
 
 	// 代码图谱:绑定到当前 workspace 根,懒构建(首次 CodeGraph 调用时才遍历解析)。
 	tools.SetCodeGraphRoot(wd)
@@ -570,6 +578,7 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 		session:         sess,
 		skillLoader:     loader,
 		skillCatalog:    skillCatalog,
+		workflowLoader:  workflowLoader,
 		hub:             hub,
 		srv:             srv,
 		webURL:          webURL,
@@ -1935,8 +1944,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// 不走原 enter 分支的 input value(可能只是 "/sk" 这种半成品 → handleSlashCommand
 				// 会报"未知命令")。先把 value 清掉,再执行完整命令。
 				chosen := matches[m.commandPaletteIdx].name
-				m.input.SetValue("")
 				m.commandPaletteIdx = 0
+				// 需要参数的命令(无弹窗兜底)→ 不直接执行,补全进输入框 + 末尾空格,等用户补参数。
+				if slashCommandNeedsArg(chosen) {
+					m.input.SetValue(chosen + " ")
+					m.input.CursorEnd()
+					return m, nil
+				}
+				m.input.SetValue("")
 				return m, m.handleSlashCommand(chosen)
 			case "esc":
 				// 取消:清掉正在敲的 "/命令",面板随 value 清空而消失。
@@ -2148,6 +2163,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if input == "" && len(m.attachedImagePaths) == 0 {
 				return m, nil
 			}
+			// 需要参数的命令但没带参数 → 不发送,补全进输入框 + 末尾空格,等用户补参数。
+			if name, ok := bareSlashNeedsArg(input); ok {
+				m.input.SetValue(name + " ")
+				m.input.CursorEnd()
+				return m, nil
+			}
 			m.input.SetValue("")
 			var cmd tea.Cmd
 			m, cmd = m.submitUserInput(input)
@@ -2321,6 +2342,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.broadcast(web.Event{Kind: "codegraph", Text: cg})
 			}
 		}
+		// workflow 运行中:子 agent 跑的过程没有 token 刷新,借这 600ms 心跳重画一次,
+		// 让步骤/阶段的耗时实时跳秒(其余情况不必,token 自带刷新)。
+		if m.streaming && m.plan != nil && !m.plan.allFinished() {
+			m.refreshViewport()
+		}
 		return m, cursorBlinkTick()
 
 	case copyHintClearMsg:
@@ -2413,7 +2439,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.streamCh == nil {
 			return m, nil
 		}
-		m.plan = &planState{items: msg.Plans}
+		m.plan = &planState{items: msg.Plans, phases: msg.Phases}
 		m.planKind = msg.Kind
 		// 不写 chatContent — plan 通过 refreshViewport 的 live overlay 实时渲染,
 		// 每次 TaskStatusMsg 自然刷新出新 checkbox。
@@ -2924,6 +2950,12 @@ func (m *model) handleSlashCommand(input string) tea.Cmd {
 	}
 	if strings.HasPrefix(cmd, "/session-delete") { // 删当前会话
 		return m.handleSessionDeleteCommand()
+	}
+	if strings.HasPrefix(cmd, "/ultracode") { // /ultracode <描述> → 让模型创建一个 workflow(对齐 Claude Code)
+		return m.handleUltracodeCommand(input)
+	}
+	if strings.HasPrefix(cmd, "/workflow") { // /workflows(列表) 或 /workflow <名字> [k=v…](保留原文大小写)
+		return m.handleWorkflowCommand(input)
 	}
 	switch cmd {
 	case "/plan":
@@ -3437,6 +3469,125 @@ func (m *model) skillsListMessage() string {
 			sm.Name, sm.Scope, sm.Description, sm.Path)
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// workflowsListMessage 列出可用 workflow(name + scope + 描述 + 路径);空则给建目录提示。
+func (m *model) workflowsListMessage() string {
+	if m.workflowLoader == nil {
+		return "workflow 系统未启用"
+	}
+	metas := m.workflowLoader.List()
+	if len(metas) == 0 {
+		var dirs strings.Builder
+		for _, d := range m.workflowLoader.AllDirs() {
+			fmt.Fprintf(&dirs, "  - %s\n", d)
+		}
+		return "暂无 workflow。在以下任一目录创建 <name>.js 即可:\n" + dirs.String() +
+			"\n脚本格式:\n" +
+			"  export const meta = { name: \"my-flow\", description: \"做什么\" };\n" +
+			"  export default async function main(args) {\n" +
+			"    phase(\"Step\"); return await agent(\"做点事\");\n" +
+			"  }\n" +
+			"\n运行:/workflow my-flow key=value"
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "可用 workflow (%d 个),用 /workflow <名字> [键=值 …] 运行:\n\n", len(metas))
+	for _, wm := range metas {
+		fmt.Fprintf(&sb, "**%s** _(%s)_\n  %s\n  %s\n\n", wm.Name, wm.Scope, wm.Description, wm.Path)
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// handleWorkflowCommand 分发 /workflows(列表)与 /workflow <名字> [k=v …](运行)。
+func (m *model) handleWorkflowCommand(input string) tea.Cmd {
+	fields := strings.Fields(strings.TrimSpace(input))
+	head := strings.ToLower(fields[0])
+	// /workflows 或裸 /workflow(没给名字)→ 列表
+	if head == "/workflows" || len(fields) < 2 {
+		m.appendChat("assistant", m.workflowsListMessage())
+		return nil
+	}
+	name := fields[1]
+	args := parseWorkflowArgs(fields[2:])
+	return m.startWorkflowTurn(input, name, args)
+}
+
+// handleUltracodeCommand 处理 /ultracode <描述>:起一个普通回合,让模型按 creating-workflows 技能
+// 为该需求创建并保存一个 workflow(对齐 Claude Code 的 ultracode)。之后用 /workflow <名字> 运行。
+func (m *model) handleUltracodeCommand(input string) tea.Cmd {
+	fields := strings.Fields(strings.TrimSpace(input))
+	desc := strings.TrimSpace(strings.Join(fields[1:], " "))
+	if desc == "" {
+		m.appendChat("System", "用法:/ultracode <描述>(据此生成并保存一个 workflow,之后用 /workflow <名字> 运行)")
+		return nil
+	}
+	prompt := "使用 `creating-workflows` 技能,为下面的需求创建一个 workflow:取一个合适的 kebab-case 名字," +
+		"调用 Workflow 工具(action=create)保存。创建完成后,用一句话告诉我 workflow 名字以及用 `/workflow <名字>` 运行。\n\n需求:" + desc
+	nm, cmd := m.submitUserInput(prompt)
+	*m = nm
+	return cmd
+}
+
+// parseWorkflowArgs 把 ["k=v", "a=b"] 解析成 map;若只有一个无 = 的 token,则原样作为字符串 args。
+func parseWorkflowArgs(toks []string) any {
+	if len(toks) == 0 {
+		return nil
+	}
+	if len(toks) == 1 && !strings.Contains(toks[0], "=") {
+		return toks[0]
+	}
+	out := map[string]string{}
+	for _, t := range toks {
+		if i := strings.IndexByte(t, '='); i > 0 {
+			out[t[:i]] = t[i+1:]
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// startWorkflowTurn 加载并运行一个 workflow,作为一个普通助手回合(复用流式 + 落盘)。
+func (m *model) startWorkflowTurn(rawInput, name string, args any) tea.Cmd {
+	if m.streaming || m.compactingFG {
+		m.appendChat("System", "正忙,稍后再运行 workflow")
+		return nil
+	}
+	script, err := m.workflowLoader.Load(name)
+	if err != nil {
+		m.appendChat("System", "加载 workflow 失败:"+err.Error())
+		return nil
+	}
+
+	cmdText := strings.TrimSpace(rawInput)
+	m.appendChat("You", cmdText)
+	m.history = append(m.history, m.buildUserMessage(cmdText))
+	m.pendingUserText = cmdText
+
+	m.plan = nil
+	m.planKind = ""
+	m.status = "thinking"
+	m.streaming = true
+	m.thinking = true
+	m.currentReply.Reset()
+	m.turnStartedAt = time.Now()
+	m.turnInputChars = sumHistoryChars(m.history)
+	m.turnOutputChars = 0
+	m.turnToolCalls = 0
+	m.activeTool = ""
+
+	workspace, _ := os.Getwd()
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelAgent = cancel
+	models := m.models
+	models.Flash.Vision = m.visionByModel[modelCapKey(models.Flash)]
+	models.Pro.Vision = m.visionByModel[modelCapKey(models.Pro)]
+
+	cmd, ch := agent.StartWorkflow(ctx, models, m.history, m.mode, workspace, m.skillCatalog, script, args)
+	m.streamCh = ch
+	m.refreshViewport()
+	return tea.Batch(m.spinner.Tick, cmd)
 }
 
 // collectSelectionText 从当前显示的渲染内容里抠出选区文本,用于 mouse-release 时写入剪贴板。

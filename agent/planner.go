@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // PlanStatus 是 plan/task 在生命周期里的状态。UI 用 statusIcon 渲染成符号。
@@ -27,6 +28,11 @@ type PlanItem struct {
 	// 运行时字段 — LLM 看不到,deepx 内部状态机驱动
 	Status  PlanStatus `json:"-"`
 	Summary string     `json:"-"`
+	Phase   string     `json:"-"` // workflow 用:所属阶段名,渲染时据此分组(CreatePlan 留空 → 平铺)
+
+	// workflow 用:子 agent 计时(Go 侧计时,不入 journal、不影响 resume)。
+	StartedAt time.Time     `json:"-"` // 开跑时刻(start 时记)
+	Elapsed   time.Duration `json:"-"` // 完成耗时(finish 时 = now-StartedAt);>0 才显示
 }
 
 // === TUI 事件 ===
@@ -38,6 +44,9 @@ type PlanItem struct {
 type PlanCreatedMsg struct {
 	Plans []PlanItem
 	Kind  string
+	// Phases 是 workflow 声明的全部阶段名(meta.phases,声明顺序)。非空时 UI 在运行前就把所有阶段
+	// 当成清单展示出来,逐步点亮;各步骤(agent)动态产生,运行到才出现在所属阶段下。CreatePlan/Todo 为空。
+	Phases []string
 }
 
 // TaskStatusMsg 通知 TUI: 某个 plan 节点的状态变了。

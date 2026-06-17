@@ -28,6 +28,7 @@
 - **📎 `@` 파일/디렉터리 참조** —— 입력창에 `@` 입력 시 로컬 퍼지 경로 선택기가 열림. 선택하면 `@경로`가 메시지에 삽입되고 모델이 필요에 따라 Read(파일)/ List(디렉터리)를 호출. 정확한 컨텍스트 제공, 전부 욱여넣을 필요 없음.
 - **🧠 듀얼 모델 자동 라우팅** —— 가벼운 작업은 flash, 복잡한 작업은 자동으로 pro 승격. `/model flash|pro`로 모델 고정, `/auto` `/plan` `/review`로 모드 전환도 가능.
 - **🗂️ 순차 Todo + 병렬 Plan DAG** —— 다단계 작업은 보이는 체크리스트로 한 단계씩. 독립적인 병렬 작업은 DAG로 분해해 서브 에이전트를 병렬 실행.
+- **🔁 재사용 가능한 Workflow** —— 반복 실행하는 멀티 에이전트 흐름을 JS 스크립트로 고정(`agent()` / `parallel()` / `pipeline()`): 다관점 리뷰, 팬아웃 리서치, 파이프라인, 빌 때까지 루프 등. `/ultracode <설명>`으로 모델이 자동 생성·저장, `/workflow <이름>`으로 실행. 진짜 병렬·중단 후 resume·구조화 출력은 도구로 강제·실행 전 모든 단계 표시 및 소요 시간 실시간 표시. Claude Code 의 workflow 스크립트 규약과 호환되어 스크립트를 그대로 상호 사용 가능.
 - **💾 무손실 세션 영속화** —— gob가 `tool_calls` / 도구 결과 / `reasoning_content`를 완전 보존해 재시작 후에도 매끄럽게 이어감. 윈도가 차면 자동 계층 압축.
 - **🔌 MCP + Skill 생태계** —— MCP 네이티브 지원. Claude의 skill 디렉터리와 호환되어 기존 skill을 그대로 재사용.
 - **🛡️ 검토 모드** —— 파일 쓰기 / Shell 실행은 기본적으로 사람의 확인을 요구.
@@ -239,6 +240,7 @@ CreatePlan
 | `/web-config`                        | 웹 대시보드 바인드 IP·포트를 팝업으로 설정("IP [포트]"를 공백으로 구분 입력; IP 비움/`127.0.0.1`=로컬 전용, `0.0.0.0`=LAN에서 휴대폰/태블릿 접속 가능, 포트 생략=랜덤). 저장 즉시 재시작 없이 적용되고 새 주소를 표시; 설정은 세션의 `meta.json`에 저장되며 접근 토큰은 세션별로 고정되어 재시작 후에도 동일. ⚠️ 이 패널은 세션을 제어하고 명령을 실행할 수 있으며 평문 HTTP이므로 신뢰할 수 있는 LAN에서만 노출하세요 |
 | `/sandbox`                           | 샌드박스: `off`(끄기) / `native`(기본, OS 격리: macOS Seatbelt, Linux bubblewrap — 쓰기를 workspace로 제한 + 프로세스 격리; OS 메커니즘이 없는 플랫폼은 소프트 정책 블랙리스트로 폴백) / `docker`(컨테이너 격리, `/sandbox docker <image>`) | / `native`(기본, OS 격리: macOS Seatbelt, Linux bubblewrap — 쓰기를 workspace로 제한 + 프로세스 격리; OS 메커니즘이 없는 플랫폼은 소프트 정책 블랙리스트로 폴백) / `docker`(컨테이너 격리, `/sandbox docker <image>`) |
 | `/working-mode`                      | 작업 모드(방법론): `karpathy`(기본, 실용주의) / `openspec`(스펙 주도) / `superpowers`(전체 워크플로 엄격); 팝업으로 선택하거나 `/working-mode kp\|spec\|sp`로 직접 전환. 세 모드는 상호 배타적 — 하나를 선택하면 나머지 두 개의 skill을 비활성화해 방법론 혼용을 방지. 세션에 저장되며 매 턴 히스토리를 오염시키지 않고 프롬프트 주입 |
+| `/ultracode` `/workflow` `/workflows` | Workflow(JS 멀티 에이전트 편성): `/ultracode <설명>`으로 모델이 생성·저장, `/workflow <이름> [k=v]`으로 실행(실행 전 확인), `/workflows`로 목록 |
 | `/lang`                              | UI 언어 전환(중 / 영)               |
 | `/mcp-list` `/mcp-add` `/mcp-delete` | MCP 서버 관리                       |
 | `/skills` `/config` `/mode`          | skill 목록 / key 재설정 / 모드 표시 |

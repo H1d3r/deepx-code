@@ -48,7 +48,27 @@ type OpenAIToolSpec struct {
 type OpenAIFunctionSpec struct {
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
-	Parameters  ToolParam `json:"parameters"`
+	Parameters  ToolParam `json:"-"`
+	// RawParameters 非空时直接作为 "parameters" 发送(用于把任意 JSON Schema 原样当工具参数,
+	// 如 structured_output 工具——schema 由用户脚本给出,形状任意,ToolParam 表达不了)。
+	RawParameters json.RawMessage `json:"-"`
+}
+
+// MarshalJSON:RawParameters 非空则原样作 parameters,否则按 ToolParam 序列化(现有工具不变)。
+func (f OpenAIFunctionSpec) MarshalJSON() ([]byte, error) {
+	params := f.RawParameters
+	if len(params) == 0 {
+		b, err := json.Marshal(f.Parameters)
+		if err != nil {
+			return nil, err
+		}
+		params = b
+	}
+	return json.Marshal(struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		Parameters  json.RawMessage `json:"parameters"`
+	}{f.Name, f.Description, params})
 }
 
 // ToOpenAISpec 转换成 OpenAI tools 协议。
@@ -494,6 +514,31 @@ var Tools = []Tool{
 		Executor: nil,
 		ReadOnly: true,
 		// Roles 留空 = 所有角色可见;子 agent 由其系统提示词禁止使用(同 CreatePlan)。
+	},
+	{
+		Name: "Workflow",
+		Description: "创建 / 运行 / 列出可复用的 workflow(用 JavaScript 编排多个子 agent 的固定流程)。\n\n" +
+			"**何时用**:用户想把一套多步、可复用、会重复跑的多子-agent 流程固化下来(多视角审查、扇出研究、流水线、对抗验证等)。一次性简单任务别用。\n\n" +
+			"**action**:\n" +
+			"  • `create` — 保存一个新 workflow,需 `saveAs`(kebab-case 名)+ `script`(完整 JS 源码)。写脚本前先遵循 `creating-workflows` 技能了解格式与 API(parallel 才有并发)。\n" +
+			"  • `run` — 运行,需 `name`,可选 `args`。**运行前会请用户确认**。\n" +
+			"  • `list` — 列出可用 workflow。\n\n" +
+			"不要用 Write 工具手写 workflow 文件,统一走本工具的 create。",
+		Parameters: ToolParam{
+			Type: "object",
+			Properties: map[string]PropDef{
+				"action": {Type: "string", Enum: []string{"create", "run", "list"}, Description: "要执行的操作"},
+				"name":   {Type: "string", Description: "run:要运行的 workflow 名"},
+				"saveAs": {Type: "string", Description: "create:保存名(kebab-case,需等于脚本 meta.name)"},
+				"script": {Type: "string", Description: "create:完整的 workflow JavaScript 源码"},
+				"args":   {Type: "string", Description: "run:可选参数(JSON 对象或 key=value)"},
+			},
+			Required: []string{"action"},
+		},
+		// Executor 为 nil:在 agent/llm.go 工具循环里被拦截(handleWorkflowTool);
+		// run 动作还会触发跑前确认。子 agent 不该用本工具,靠系统提示词禁止 + nil 兜底。
+		Executor: nil,
+		ReadOnly: false,
 	},
 	{
 		Name: "Explore",

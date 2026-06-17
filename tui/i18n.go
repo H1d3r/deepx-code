@@ -97,6 +97,18 @@ var translations = map[string]map[Lang]string{
 		LangZH: "删除 ~/.deepx/skills/ 下的 skill(弹窗)",
 		LangEN: "Delete a skill from ~/.deepx/skills/ (popup)",
 	},
+	"cmd.ultracode.desc": {
+		LangZH: "据描述创建 workflow:/ultracode <描述>",
+		LangEN: "Create a workflow from a description: /ultracode <description>",
+	},
+	"cmd.workflows.desc": {
+		LangZH: "列出可用 workflow",
+		LangEN: "List available workflows",
+	},
+	"cmd.workflow.desc": {
+		LangZH: "跑 workflow:/workflow <名字> [键=值 …]",
+		LangEN: "Run a workflow: /workflow <name> [key=value …]",
+	},
 	"cmd.mcp-list.desc": {
 		LangZH: "列出 MCP server 及状态",
 		LangEN: "List MCP servers & status",
@@ -433,8 +445,8 @@ var translations = map[string]map[Lang]string{
 	"panel.plan":      {LangZH: "计划", LangEN: "Plan"}, // CreatePlan:并发子 agent DAG
 
 	// === Right panel labels ===
-	"panel.label.used":    {LangZH: "占用", LangEN: "Used"},
-	"panel.label.output":  {LangZH: "输出", LangEN: "Output"},
+	"panel.label.used":   {LangZH: "占用", LangEN: "Used"},
+	"panel.label.output": {LangZH: "输出", LangEN: "Output"},
 	"panel.label.cache":  {LangZH: "缓存", LangEN: "Cache"},
 	"panel.label.sbmode": {LangZH: "隔离", LangEN: "Isolation"},
 	"panel.label.wmode":  {LangZH: "方法", LangEN: "Method"},
@@ -668,7 +680,7 @@ var translations = map[string]map[Lang]string{
 		LangEN: "Invalid port: enter an integer 0–65535 (empty = random)",
 	},
 	"welcome": {
-		LangZH: "欢迎试用 **deepx-code**,输入 `/help` 查看命令与快捷键。",
+		LangZH: "欢迎使用 **deepx-code**,输入 `/help` 查看命令与快捷键。",
 		LangEN: "Welcome to **deepx-code** — type `/help` for commands and shortcuts.",
 	},
 }

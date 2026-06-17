@@ -25,6 +25,9 @@ func slashCommands() []struct{ name, desc string } {
 		{"/skills", T("cmd.skills.desc")},
 		{"/skill-add", T("cmd.skill-add.desc")},
 		{"/skill-delete", T("cmd.skill-delete.desc")},
+		{"/ultracode", T("cmd.ultracode.desc")},
+		{"/workflows", T("cmd.workflows.desc")},
+		{"/workflow", T("cmd.workflow.desc")},
 		{"/mcp-list", T("cmd.mcp-list.desc")},
 		{"/mcp-add", T("cmd.mcp-add.desc")},
 		{"/mcp-delete", T("cmd.mcp-delete.desc")},
@@ -42,6 +45,31 @@ func slashCommands() []struct{ name, desc string } {
 		{"/help", T("cmd.help.desc")},
 		{"/exit", T("cmd.exit.desc")},
 	}
+}
+
+// slashCommandNeedsArg 标记「需要内联参数、且无弹窗兜底」的命令。
+// 这类命令无参回车时不该直接执行(只会得到一句"用法"提示),而应把命令补全进输入框、
+// 末尾留空格,等用户手动补参数。注:有弹窗收集输入的命令(/model /config /skill-add /reasoning
+// /mcp-add /lang /sessions 等)不在此列——它们无参即弹窗,本就是"弹出"。
+func slashCommandNeedsArg(name string) bool {
+	switch name {
+	case "/workflow", "/ultracode", "/session-rename":
+		return true
+	}
+	return false
+}
+
+// bareSlashNeedsArg:input 恰好是一个「需要参数」的命令且没带任何参数时,返回该命令名 + true。
+func bareSlashNeedsArg(input string) (string, bool) {
+	fields := strings.Fields(strings.TrimSpace(input))
+	if len(fields) != 1 {
+		return "", false
+	}
+	name := strings.ToLower(fields[0])
+	if slashCommandNeedsArg(name) {
+		return name, true
+	}
+	return "", false
 }
 
 // isExactSlashCommand 判断 input 的首 token 是否精确等于某个已知命令名
