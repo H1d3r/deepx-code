@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"deepx/tools"
 	"encoding/json"
 	"os"
 	"strings"
@@ -62,12 +63,19 @@ func formatUpdatePreview(argsJSON string) string {
 	if oldS == "" && newS == "" {
 		return header
 	}
-	// 字符串模式没有显式行号,grep 文件定位 old_string 的起始行,这样 -/+ 行前面
-	// 也能渲染行号列。ToolCallStartMsg 在 Executor 之前 fire,文件还是 pre-edit 状态,
-	// 此时 old_string 仍能在文件里精确匹配到。读不到 / 没匹配 → startLine=0,退化成无行号。
+	// diff 行号:
+	//  ① 编辑已执行过 → 直接取 EditFile 在编辑时(文件还是改前)记下的精确行号,最准、与当前文件无关;
+	//  ② 还没执行(实时预览,ToolCallStartMsg)→ 缓存里没有,grep 改前文件里的 old_string 兜底。
+	//  ③ 实在没有 → 再试 new_string(极端兜底)。
+	path := strVal(args["path"])
 	startLine := 0
-	if oldS != "" {
-		startLine = locateLineInFile(strVal(args["path"]), oldS)
+	if v, ok := tools.RecordedEditLine(path, oldS); ok {
+		startLine = v
+	} else if oldS != "" {
+		startLine = locateLineInFile(path, oldS)
+	}
+	if startLine == 0 && newS != "" {
+		startLine = locateLineInFile(path, newS)
 	}
 
 	var sb strings.Builder
@@ -79,9 +87,9 @@ func formatUpdatePreview(argsJSON string) string {
 	return sb.String()
 }
 
-// locateLineInFile 读 path,在文件内容里精确定位 needle,返回它的首行行号(1-indexed)。
-// 读不到 / 没匹配返回 0。多次匹配时取第一个 —— 跟 EditFile 字符串模式"必须唯一"约束一致。
-// 用于字符串模式的 patch 预览:有了行号就能在 -/+ 前面渲染行号列。
+// locateLineInFile 读 path,定位 needle 的首行行号(1-indexed),读不到 / 没匹配返回 0。
+// 复用 tools.LocateEditTargetLine —— 与 EditFile 同一套多级容差匹配(精确→unescape→空白/缩进容差),
+// 所以模型 old_string 有空白/缩进/CRLF 漂移、但 EditFile 容差匹配成功时,预览也照样能渲染行号。
 func locateLineInFile(path, needle string) int {
 	if path == "" || needle == "" {
 		return 0
@@ -90,11 +98,7 @@ func locateLineInFile(path, needle string) int {
 	if err != nil {
 		return 0
 	}
-	idx := strings.Index(string(data), needle)
-	if idx < 0 {
-		return 0
-	}
-	return strings.Count(string(data[:idx]), "\n") + 1
+	return tools.LocateEditTargetLine(string(data), needle)
 }
 
 const (
