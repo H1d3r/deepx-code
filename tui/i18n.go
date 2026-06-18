@@ -313,6 +313,9 @@ var translations = map[string]map[Lang]string{
 			"- `/skills` — 列出可用 skill\n" +
 			"- `/skill-add` `/skill-delete` — 搜索安装 / 删除 skill\n" +
 			"- `/mcp-list` `/mcp-add` `/mcp-delete` — 管理 MCP server\n" +
+			"- `/ultracode` — 据一句描述生成并保存一个 workflow:`/ultracode <描述>`\n" +
+			"- `/workflows` — 列出已有 workflow(`.deepx/workflows/` + `.claude/workflows/`)\n" +
+			"- `/workflow` — 运行已保存的 workflow:`/workflow <名字> [键=值 …]`(运行前确认)\n" +
 			"- `/lang` — 切换语言 (中/英)\n" +
 			"- `/reasoning` — 设置 thinking / reasoning_effort(per-role,空值不发)\n" +
 			"- `/compact` — 手动压缩会话历史(保留尾部 20%)\n" +
@@ -342,6 +345,9 @@ var translations = map[string]map[Lang]string{
 			"- `/skills` — List available skills\n" +
 			"- `/skill-add` `/skill-delete` — Search-install / delete skills\n" +
 			"- `/mcp-list` `/mcp-add` `/mcp-delete` — Manage MCP servers\n" +
+			"- `/ultracode` — Generate & save a workflow from a description: `/ultracode <description>`\n" +
+			"- `/workflows` — List saved workflows (`.deepx/workflows/` + `.claude/workflows/`)\n" +
+			"- `/workflow` — Run a saved workflow: `/workflow <name> [key=value …]` (confirms before running)\n" +
 			"- `/lang` — Switch language (zh/en)\n" +
 			"- `/reasoning` — Set thinking / reasoning_effort (per-role, empty = don't send)\n" +
 			"- `/compact` — Manually compact session history (keep last 20%)\n" +
