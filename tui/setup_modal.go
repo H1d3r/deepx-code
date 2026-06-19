@@ -338,7 +338,13 @@ func (m *model) submitSetup() tea.Cmd {
 	// 反斜杠转义已在 renderMarkdown 渲染层统一处理(见 backslashSentinel),这里不必再包反引号。
 	m.appendChat("System", T("setup.saved_to")+path)
 	// 对新配置的模型重探视觉能力(结果经 visionCapMsg 回灌当前会话 + 覆盖缓存)。
-	return tea.Batch(visionProbeCmds(m.models)...)
+	// 余额也重探:换了供应商/Key,旧值已无意义,先清空待新值回灌。
+	m.balance = ""
+	cmds := visionProbeCmds(m.models)
+	if cmd := balanceProbeCmd(m.models); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	return tea.Batch(cmds...)
 }
 
 // openSetupModal 给 /config 命令用:把当前面板切到 modal(从选供应商那步开始),允许 Esc 取消。
@@ -419,5 +425,11 @@ func (m *model) applyProvider(name string) tea.Cmd {
 	m.visionByModel = loadVisionCaps(m.models)
 	m.appendChat("System", fmt.Sprintf(T("provider.switched"), name, m.models.Flash.Model, m.models.Pro.Model))
 	m.refreshViewport()
-	return tea.Batch(visionProbeCmds(m.models)...)
+	// 换供应商 → 余额变了,先清空待重探回灌。
+	m.balance = ""
+	cmds := visionProbeCmds(m.models)
+	if cmd := balanceProbeCmd(m.models); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	return tea.Batch(cmds...)
 }

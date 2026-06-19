@@ -861,7 +861,23 @@ func (m model) rightPanelView() string {
 	if idx := strings.IndexAny(host, "/?"); idx >= 0 {
 		host = host[:idx]
 	}
-	rows = append(rows, section(T("panel.vendor"), []string{subtle(host)})...)
+	// 厂商段拆两个子标签:接口(host)+ 余额。余额:支持的供应商(DeepSeek/Kimi)显示金额(高亮),
+	// 不支持显示 "-"(暗色),尚未探到(m.balance=="")显示 "…"(暗色)。
+	var balanceVal string
+	switch {
+	case m.balance == "" || m.balance == "-":
+		val := m.balance
+		if val == "" {
+			val = "…"
+		}
+		balanceVal = subtle(val)
+	default:
+		balanceVal = lipgloss.NewStyle().Foreground(highlightColor).Render(m.balance)
+	}
+	rows = append(rows, section(T("panel.vendor"), []string{
+		label(T("panel.label.endpoint")) + " " + subtle(host),
+		label(T("panel.label.balance")) + " " + balanceVal,
+	})...)
 
 	// 注:web dashboard 地址不在右栏显示 —— 启动时已在 chat 区给出可点击 / 已复制的提示,
 	// 这里再放一份既重复又因面板窄被迫折行,反而没法点。

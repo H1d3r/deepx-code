@@ -81,6 +81,11 @@ type model struct {
 	// 取值缺省 false → 发图走 OCR;true → 发图渲染成 base64 内联,不走 OCR。
 	visionByModel map[string]bool
 
+	// balance 是右栏「模型厂商」段展示的账户剩余金额串(已含币种符号,如 "¥110.00")。
+	// "" = 尚未探到(不显示);"-" = 该供应商不支持查询(见 balance.go / agent.ProbeBalance)。
+	// 每次启动、改配置、切供应商时经 balanceMsg 回灌。
+	balance string
+
 	mode        agent.AgentMode
 	workingMode agent.WorkingMode // 工作模式 kp/openspec/sp(默认 kp);每轮注入对应 skill 引导;按 session 保存/恢复
 	history     []agent.ChatMessage
@@ -1050,6 +1055,10 @@ func (m model) Init() tea.Cmd {
 	}
 	// 视觉能力探测:每次启动对各模型重探一次(见 vision.go),结果经 visionCapMsg 回灌。
 	cmds = append(cmds, visionProbeCmds(m.models)...)
+	// 账户余额:仅 DeepSeek/Kimi 可凭 Key 查,其它回 "-"(见 balance.go)。
+	if cmd := balanceProbeCmd(m.models); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 	if cmd := ForceGraphemeCmd(); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
@@ -2250,6 +2259,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyVisionCap(msg)
 		return m, nil
 
+	case balanceMsg:
+		// 余额查询回执:更新右栏「模型厂商」段展示的剩余金额。
+		m.applyBalance(msg)
+		return m, nil
+
 	case agent.VisionUnsupportedMsg:
 		// 运行时自愈:某模型实际拒绝图片(agent 已自动改 OCR 重发)→ 把它标记为无视觉、纠正缓存,
 		// 下次发图不再对它用 base64。
@@ -2618,11 +2632,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// 本轮花了 token,余额变了:后台重探一次(仅 DeepSeek/Kimi 实际打接口,其它是 no-op)。
+		balCmd := balanceProbeCmd(m.models)
+
 		// 没触发实时压缩:有排队输入就发下一条;影子 Cmd(若有)并行后台跑,不阻塞用户。
 		if next, qcmd, ok := m.popQueuedInput(); ok {
-			return next, tea.Batch(shadowCmd, qcmd)
+			return next, tea.Batch(shadowCmd, qcmd, balCmd)
 		}
-		return m, shadowCmd
+		return m, tea.Batch(shadowCmd, balCmd)
 
 	case agent.StreamErrMsg:
 		if m.streamCh == nil {

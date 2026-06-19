@@ -462,8 +462,10 @@ var translations = map[string]map[Lang]string{
 	"panel.label.used":   {LangZH: "占用", LangEN: "Used"},
 	"panel.label.output": {LangZH: "输出", LangEN: "Output"},
 	"panel.label.cache":  {LangZH: "缓存", LangEN: "Cache"},
-	"panel.label.sbmode": {LangZH: "隔离", LangEN: "Isolation"},
-	"panel.label.wmode":  {LangZH: "方法", LangEN: "Method"},
+	"panel.label.sbmode":   {LangZH: "隔离", LangEN: "Isolation"},
+	"panel.label.wmode":    {LangZH: "方法", LangEN: "Method"},
+	"panel.label.endpoint": {LangZH: "接口", LangEN: "Endpoint"},
+	"panel.label.balance":  {LangZH: "余额", LangEN: "Balance"},
 
 	// === Status values ===
 	"status.idle":      {LangZH: "idle", LangEN: "idle"},
