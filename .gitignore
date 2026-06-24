@@ -50,3 +50,5 @@ promo
 
 # 内部笔记 / 不对外的 roadmap 等
 .notes
+# playwright
+.playwright-mcp

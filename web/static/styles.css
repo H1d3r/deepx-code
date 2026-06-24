@@ -217,8 +217,21 @@ body {
 .review-actions .approve { background: var(--green); color: #ffffff; }
 .review-actions .reject { background: var(--red); color: #ffffff; }
 
-/* AskUser 选择题弹层 */
-.ask-box { max-height: 80vh; overflow: auto; }
+/* AskUser 选择题:内联进对话流的卡片(不再浮层弹窗,issue #134) */
+.chat-ask {
+  margin: 8px 0; padding: 14px 16px; max-width: 820px;
+  background: var(--bg2); border: 1px solid var(--accent); border-radius: 10px;
+}
+.ask-title { font-weight: 700; color: var(--accent); margin-bottom: 10px; }
+.ask-actions { display: flex; gap: 12px; margin-top: 14px; justify-content: flex-end; }
+.ask-actions button { border: none; border-radius: 8px; padding: 8px 22px; font-weight: 600; cursor: pointer; }
+.ask-actions .approve { background: var(--green); color: #ffffff; }
+.ask-actions .reject { background: var(--red); color: #ffffff; }
+/* 作答折叠档案:留在对话流的轻量记录,弱化处理,区别于进行中的卡片 */
+.bubble.ask-record {
+  background: var(--bg2); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  color: var(--dim); font-size: 13px;
+}
 .ask-q { margin-bottom: 16px; }
 .ask-question { font-weight: 600; margin-bottom: 8px; }
 .ask-kind { color: var(--dim); font-weight: 400; font-size: 12px; margin-left: 6px; }

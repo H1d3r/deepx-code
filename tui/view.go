@@ -364,9 +364,8 @@ func (m model) View() tea.View {
 	if m.reviewPending {
 		mainUI = overlayCentered(mainUI, m.reviewBlock(), m.width, m.height)
 	}
-	if m.askPending {
-		mainUI = overlayCentered(mainUI, m.askUserBlock(), m.width, m.height)
-	}
+	// AskUser 选择题不再用居中浮层:卡片已内联进对话流末尾(见 renderChatBaseContent),
+	// 随会话一起滚动,用户可 PgUp/滚轮回看历史,作答后折叠成档案留痕(issue #134)。
 	if m.showLangModal {
 		mainUI = overlayCentered(mainUI, m.langModalBlock(), m.width, m.height)
 	}
