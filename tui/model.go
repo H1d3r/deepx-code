@@ -1919,17 +1919,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.refreshViewport()
 					return m, nil
 				}
+				// 折叠成 kindSystem 档案段留在 scrollback:问题 + 已选答案,作答有痕(issue #134)。
+				m.chatContent.Open(kindSystem, m.askRecord(false))
 				m.askCh <- m.buildAskAnswer()
 				m.askPending = false
 				m.broadcast(web.Event{Kind: "ask_resolved"})
 				m.refreshViewport()
 				return m, func() tea.Msg { return reviewResultMsg{} }
 			case "esc", "ctrl+c":
+				m.chatContent.Open(kindSystem, m.askRecord(true))
 				m.askCh <- ""
 				m.askPending = false
 				m.broadcast(web.Event{Kind: "ask_resolved"})
 				m.refreshViewport()
 				return m, func() tea.Msg { return reviewResultMsg{} }
+			case "pgup", "pgdown", "pageup", "pagedown", "home", "end", "ctrl+u", "ctrl+d":
+				// 卡片已内联进对话流:翻页/顶底键照常滚动 chat 回看历史,不被选项交互吞掉(issue #134)。
+				var c tea.Cmd
+				m.chatViewport, c = m.chatViewport.Update(msg)
+				return m, c
 			}
 			return m, nil
 		}
@@ -3800,6 +3808,11 @@ func (m *model) renderChatBaseContent(w int) string {
 	// docker 镜像拉取动画:拉取期间挂在对话区末尾,随 tick 刷新省略号;拉完即撤(dockerPulling 置回 false)。
 	if m.dockerPulling {
 		content += "\n" + dockerPullText(m.dockerPullImage, m.dockerPullDots)
+	}
+	// AskUser 选择题:待答时把交互卡片挂在对话区末尾(同 plan/docker 套路),不再用居中浮层。
+	// 这样卡片随会话一起滚动,用户可 PgUp/滚轮回看历史;答完后会折叠成 kindSystem 档案段留痕(issue #134)。
+	if m.askPending {
+		content += "\n" + m.askUserBlock()
 	}
 	// 思考动画不再画在 chat 末尾 —— 已统一移到输入框上方的活动状态行(statusFooterLine),
 	// 避免一次 thinking 出现在两个地方。

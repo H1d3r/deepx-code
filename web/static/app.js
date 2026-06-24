@@ -23,6 +23,9 @@ const I18N = {
     'ask.multi': '(多选)',
     'ask.submit': '提交',
     'ask.cancel': '取消',
+    'ask.skipped': '（已跳过）',
+    'ask.none': '（未选）',
+    'ask.join': '、',
     'footer.thinking': '思考中',
     'footer.streaming': '输出中',
     'footer.tool': '调用工具',
@@ -98,6 +101,9 @@ const I18N = {
     'ask.multi': '(multiple)',
     'ask.submit': 'Submit',
     'ask.cancel': 'Cancel',
+    'ask.skipped': '(skipped)',
+    'ask.none': '(none)',
+    'ask.join': ', ',
     'footer.thinking': 'Thinking',
     'footer.streaming': 'Responding',
     'footer.tool': 'Running tool',
@@ -434,15 +440,31 @@ createApp({
         this.askSel[qi] = this.askSel[qi].map((_, i) => i === oi);
       }
     },
+    // pushAskRecord 把作答折叠成一条 ask-record 消息留在对话流(对齐 TUI 的 kindSystem 档案段,issue #134):
+    // 每题一行「❓ 问题 → **已选答案**」(多选用顿号连接);skipped=true 记「（已跳过）」。
+    // 必须在清空 askSel 之前调用 —— 它要读 askSel 取选中项。
+    pushAskRecord(questions, skipped) {
+      const lines = (questions || []).map((q, qi) => {
+        if (skipped) return `❓ ${q.question} — ${this.t('ask.skipped')}`;
+        const sel = (q.options || [])
+          .filter((_, oi) => this.askSel[qi] && this.askSel[qi][oi])
+          .map(opt => opt.label);
+        const ans = sel.length ? sel.join(this.t('ask.join')) : this.t('ask.none');
+        return `❓ ${q.question} → **${ans}**`;
+      });
+      if (lines.length) this.messages.push({ role: 'ask-record', content: lines.join('\n\n') });
+    },
     async submitAsk() {
       // 组装成与终端一致的格式:{"answers":[{question, selected:[value...]}]}
-      const answers = (this.askPending || []).map((q, qi) => ({
+      const questions = this.askPending || [];
+      const answers = questions.map((q, qi) => ({
         question: q.question,
         selected: (q.options || [])
           .filter((_, oi) => this.askSel[qi] && this.askSel[qi][oi])
           .map(opt => opt.value || opt.label),
       }));
       const answer = JSON.stringify({ answers });
+      this.pushAskRecord(questions, false); // 留痕:先于清空 askSel
       this.askPending = null;
       this.askSel = [];
       await fetch('/api/ask-answer', {
@@ -452,6 +474,7 @@ createApp({
       }).catch(() => {});
     },
     async cancelAsk() {
+      this.pushAskRecord(this.askPending, true); // 取消也留痕:先于清空 askSel
       this.askPending = null;
       this.askSel = [];
       await fetch('/api/ask-answer', {

@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"charm.land/lipgloss/v2"
@@ -49,6 +50,31 @@ func (m model) buildAskAnswer() string {
 		return "{}"
 	}
 	return string(b)
+}
+
+// askRecord 把作答结果折叠成一段紧凑的 markdown 档案,作为 kindSystem 段写进对话流留痕(issue #134):
+// 每题一行「❓ 问题 → **已选答案**」(多选用顿号连接);skipped=true 时记「（已跳过）」。
+// 待答时的完整交互卡片(askUserBlock)消失后,scrollback 里仍能看到问了什么、选了什么。
+func (m model) askRecord(skipped bool) string {
+	lines := make([]string, 0, len(m.askQuestions))
+	for qi, q := range m.askQuestions {
+		if skipped {
+			lines = append(lines, fmt.Sprintf("❓ %s —（已跳过）", q.Question))
+			continue
+		}
+		var sel []string
+		for oi, on := range m.askSelected[qi] {
+			if on {
+				sel = append(sel, q.Options[oi].Label)
+			}
+		}
+		ans := "（未选）"
+		if len(sel) > 0 {
+			ans = strings.Join(sel, "、")
+		}
+		lines = append(lines, fmt.Sprintf("❓ %s → **%s**", q.Question, ans))
+	}
+	return strings.Join(lines, "\n\n")
 }
 
 // askUserBlock 渲染 AskUser 选择题弹窗(当前题)。

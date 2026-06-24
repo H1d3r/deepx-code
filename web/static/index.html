@@ -71,6 +71,10 @@
               <div class="role">{{ t('you') }}</div>
               <div class="bubble user-text">{{ m.content }}</div>
             </template>
+            <!-- AskUser 作答折叠档案:问题 + 已选答案,留在对话流里(issue #134) -->
+            <template v-else-if="m.role === 'ask-record'">
+              <div class="bubble ask-record md" v-html="render(m.content)"></div>
+            </template>
             <!-- assistant:仅当有实际内容时才出气泡,空消息不渲染空卡片 -->
             <template v-else-if="m.content && m.content.trim()">
               <div class="role">deepx</div>
@@ -102,6 +106,22 @@
                   <div class="plan-sum" v-if="p.summary">{{ p.summary }}</div>
                 </div>
               </div>
+            </div>
+          </div>
+          <!-- AskUser 选择题:内联进对话流末尾,随会话一起滚动,不再用居中浮层(issue #134) -->
+          <div v-if="askPending" class="chat-ask">
+            <div class="ask-title">{{ t('ask.title') }}</div>
+            <div v-for="(q, qi) in askPending" :key="qi" class="ask-q">
+              <div class="ask-question">{{ q.question }}<span class="ask-kind">{{ q.multiple ? t('ask.multi') : t('ask.single') }}</span></div>
+              <label v-for="(opt, oi) in q.options" :key="oi" class="ask-opt" :class="{ on: askSel[qi] && askSel[qi][oi] }">
+                <input :type="q.multiple ? 'checkbox' : 'radio'" :name="'q'+qi"
+                       :checked="askSel[qi] && askSel[qi][oi]" @change="toggleAsk(qi, oi, q.multiple)">
+                <span>{{ opt.label }}</span>
+              </label>
+            </div>
+            <div class="ask-actions">
+              <button class="reject" @click="cancelAsk()">{{ t('ask.cancel') }}</button>
+              <button class="approve" @click="submitAsk()">{{ t('ask.submit') }}</button>
             </div>
           </div>
         </div>
@@ -223,25 +243,6 @@
         <div class="review-actions">
           <button class="approve" @click="review(true)">{{ t('review.approve') }}</button>
           <button class="reject" @click="review(false)">{{ t('review.reject') }}</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- AskUser 选择题弹层 -->
-    <div v-if="askPending" class="review-mask">
-      <div class="review-box ask-box">
-        <div class="review-title">{{ t('ask.title') }}</div>
-        <div v-for="(q, qi) in askPending" :key="qi" class="ask-q">
-          <div class="ask-question">{{ q.question }}<span class="ask-kind">{{ q.multiple ? t('ask.multi') : t('ask.single') }}</span></div>
-          <label v-for="(opt, oi) in q.options" :key="oi" class="ask-opt" :class="{ on: askSel[qi] && askSel[qi][oi] }">
-            <input :type="q.multiple ? 'checkbox' : 'radio'" :name="'q'+qi"
-                   :checked="askSel[qi] && askSel[qi][oi]" @change="toggleAsk(qi, oi, q.multiple)">
-            <span>{{ opt.label }}</span>
-          </label>
-        </div>
-        <div class="review-actions">
-          <button class="reject" @click="cancelAsk()">{{ t('ask.cancel') }}</button>
-          <button class="approve" @click="submitAsk()">{{ t('ask.submit') }}</button>
         </div>
       </div>
     </div>
