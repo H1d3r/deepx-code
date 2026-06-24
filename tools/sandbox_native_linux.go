@@ -4,16 +4,18 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
-	"github.com/landlock-lsm/go-landlock/landlock"
-	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
+	"golang.org/x/sys/unix"
 )
 
 // Linux native 隔离,三级择优:
@@ -60,11 +62,21 @@ func bwrapAvailable() bool {
 // landlockAvailable 仅查询内核 Landlock ABI 版本(纯探测,不施加任何限制)。≥1 即支持。
 func landlockAvailable() bool {
 	llProbeOnce.Do(func() {
-		if v, err := llsys.LandlockGetABIVersion(); err == nil && v >= 1 {
-			llProbeOK = true
-		}
+		llProbeOK = landlockABIVersion() >= 1
 	})
 	return llProbeOK
+}
+
+// landlockABIVersion 用裸 syscall 查询内核 Landlock ABI 版本,返回 0 表示不支持
+// (内核 <5.13 / 未编进 / 未在 cmdline 启用)。landlock_create_ruleset 在 attr=NULL、size=0、
+// flags=LANDLOCK_CREATE_RULESET_VERSION 时直接返回 ABI 版本号(正整数)而非 fd。
+// 走标准库 syscall(仅当前线程),不经 go-landlock/libpsx 的全线程同步,故 cgo/iscgo 下也安全。
+func landlockABIVersion() int {
+	r, _, e := syscall.Syscall(uintptr(unix.SYS_LANDLOCK_CREATE_RULESET), 0, 0, unix.LANDLOCK_CREATE_RULESET_VERSION)
+	if e != 0 {
+		return 0
+	}
+	return int(r)
 }
 
 // nativeIsolationAvailable 报告本机能否做 native OS 隔离(bwrap 或 Landlock 任一)。
@@ -140,15 +152,14 @@ func RunSandboxTrampolineIfRequested() {
 		_ = os.Chdir(cwd)
 	}
 
-	// 读全局(RODirs 含执行权限,能跑二进制),只写可写根。缓存目录可能不存在 → IgnoreIfMissing。
-	rules := []landlock.Rule{landlock.RODirs("/")}
-	for _, r := range roots {
-		if r != "" {
-			rules = append(rules, landlock.RWDirs(r).IgnoreIfMissing())
-		}
-	}
-	// BestEffort:内核版本不够则尽力而为,绝不因 Landlock 失败而拒跑命令(最坏退化为不隔离)。
-	_ = landlock.V5.BestEffort().RestrictPaths(rules...)
+	// 关键:把"prctl(NO_NEW_PRIVS) → landlock_restrict_self → execve"钉在同一 OS 线程上。
+	// Landlock 域与 no_new_privs 都是线程属性、随 execve 继承;execve 会终止其余线程并以本线程映像
+	// 替换整个进程,故只需限制本线程即可约束到真正的命令及其后代 —— 无需 go-landlock 的全线程同步,
+	// 从而彻底避开 cgo/iscgo 下 runtime 拒绝 doAllThreadsSyscall 的 panic(issue #138)。不解锁(execve 永不返回)。
+	runtime.LockOSThread()
+
+	// BestEffort:Landlock 不可用 / 施加失败一律吞掉,绝不因此拒跑命令(最坏退化为不隔离)。
+	_ = applyLandlockRestrict(roots)
 
 	// 清掉跳板自用的 env,避免泄漏给子命令(否则子命令里再起 deepx 会被误判为跳板)。
 	env := make([]string, 0, len(os.Environ()))
@@ -167,4 +178,103 @@ func RunSandboxTrampolineIfRequested() {
 	// exec 替换当前进程映像;Landlock 域随 execve 保留 → 真正约束 sh 及其后代。
 	_ = syscall.Exec(sh, []string{"sh", "-c", command}, env)
 	os.Exit(127) // 只有 exec 失败才会走到这
+}
+
+// === Landlock 裸 syscall 施加 ===
+//
+// 不用 go-landlock 库:它在内核 ABI <V8 时必须把 PR_SET_NO_NEW_PRIVS 经 libpsx 同步到所有 OS 线程,
+// 而 Go runtime 在 cgo/iscgo=true(deepx 因 purego 动态链接正是如此)下拒绝该全线程 syscall 并 panic
+// (issue #138)。这里改用标准库 syscall 在当前(已 LockOSThread 的)线程上直接施加 —— 因跳板施加完
+// 立刻 execve、Landlock 域随 execve 继承,单线程足矣,且彻底不碰 libpsx。
+//
+// 参数结构体 / 常量取自 golang.org/x/sys/unix(内核 <linux/landlock.h> 的官方映射)。
+
+// landlockFSReadExec 是只读根 / 授予的访问位:执行 + 读文件 + 列目录,不含任何写 / 改位。
+const landlockFSReadExec = unix.LANDLOCK_ACCESS_FS_EXECUTE |
+	unix.LANDLOCK_ACCESS_FS_READ_FILE |
+	unix.LANDLOCK_ACCESS_FS_READ_DIR
+
+// landlockHandledFS 返回该 ABI 下要"接管"(handle)的全部 FS 访问位。
+// 只请求内核认识的位:V1 的 13 个基础位,Refer(≥V2)/Truncate(≥V3)/IoctlDev(≥V5)按版本叠加。
+// 请求子集永不 EINVAL;授给可写根时用这整套(含写),授给只读根时只给其中的读 / 执行子集。
+func landlockHandledFS(abi int) uint64 {
+	var m uint64 = unix.LANDLOCK_ACCESS_FS_EXECUTE |
+		unix.LANDLOCK_ACCESS_FS_WRITE_FILE |
+		unix.LANDLOCK_ACCESS_FS_READ_FILE |
+		unix.LANDLOCK_ACCESS_FS_READ_DIR |
+		unix.LANDLOCK_ACCESS_FS_REMOVE_DIR |
+		unix.LANDLOCK_ACCESS_FS_REMOVE_FILE |
+		unix.LANDLOCK_ACCESS_FS_MAKE_CHAR |
+		unix.LANDLOCK_ACCESS_FS_MAKE_DIR |
+		unix.LANDLOCK_ACCESS_FS_MAKE_REG |
+		unix.LANDLOCK_ACCESS_FS_MAKE_SOCK |
+		unix.LANDLOCK_ACCESS_FS_MAKE_FIFO |
+		unix.LANDLOCK_ACCESS_FS_MAKE_BLOCK |
+		unix.LANDLOCK_ACCESS_FS_MAKE_SYM
+	if abi >= 2 {
+		m |= unix.LANDLOCK_ACCESS_FS_REFER
+	}
+	if abi >= 3 {
+		m |= unix.LANDLOCK_ACCESS_FS_TRUNCATE
+	}
+	if abi >= 5 {
+		m |= unix.LANDLOCK_ACCESS_FS_IOCTL_DEV
+	}
+	return m
+}
+
+// applyLandlockRestrict 在当前 OS 线程施加 Landlock 文件写禁闭:读 / 执行整个根可,只写 writable 根。
+// 必须在 runtime.LockOSThread() 之后、execve 之前调用。任何一步失败都返回 error(调用方按 BestEffort 吞掉)。
+func applyLandlockRestrict(writable []string) error {
+	abi := landlockABIVersion()
+	if abi < 1 {
+		return fmt.Errorf("landlock 不可用")
+	}
+	handled := landlockHandledFS(abi)
+
+	attr := unix.LandlockRulesetAttr{Access_fs: handled}
+	fd, _, e := syscall.Syscall(uintptr(unix.SYS_LANDLOCK_CREATE_RULESET),
+		uintptr(unsafe.Pointer(&attr)), unsafe.Sizeof(attr), 0)
+	if e != 0 {
+		return fmt.Errorf("landlock_create_ruleset: %v", e)
+	}
+	defer syscall.Close(int(fd))
+
+	// 读 / 执行整个根(不含写位),保证能跑二进制、读任意文件。
+	if err := landlockAddPathRule(int(fd), "/", landlockFSReadExec); err != nil {
+		return err
+	}
+	// 可写根:授全部已接管的位(含写)。打不开的目录(不存在等)跳过 —— 等价 IgnoreIfMissing。
+	for _, dir := range writable {
+		if dir == "" {
+			continue
+		}
+		_ = landlockAddPathRule(int(fd), dir, handled)
+	}
+
+	// 非 root 下 landlock_restrict_self 要求先置 no_new_privs;单线程 prctl 即可(不经 libpsx)。
+	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		return fmt.Errorf("prctl(NO_NEW_PRIVS): %v", err)
+	}
+	if _, _, e := syscall.Syscall(uintptr(unix.SYS_LANDLOCK_RESTRICT_SELF), fd, 0, 0); e != 0 {
+		return fmt.Errorf("landlock_restrict_self: %v", e)
+	}
+	return nil
+}
+
+// landlockAddPathRule 给 ruleset 加一条 path_beneath 规则:dir 子树允许 access 指定的访问位。
+// 用 O_PATH 打开目录(轻量、不需读权限),fd 仅供本次 add_rule 引用。
+func landlockAddPathRule(rulesetFd int, dir string, access uint64) error {
+	dirFd, err := unix.Open(dir, unix.O_PATH|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("open %q: %v", dir, err)
+	}
+	defer unix.Close(dirFd)
+	attr := unix.LandlockPathBeneathAttr{Allowed_access: access, Parent_fd: int32(dirFd)}
+	if _, _, e := syscall.Syscall6(uintptr(unix.SYS_LANDLOCK_ADD_RULE),
+		uintptr(rulesetFd), unix.LANDLOCK_RULE_PATH_BENEATH,
+		uintptr(unsafe.Pointer(&attr)), 0, 0, 0); e != 0 {
+		return fmt.Errorf("landlock_add_rule %q: %v", dir, e)
+	}
+	return nil
 }
