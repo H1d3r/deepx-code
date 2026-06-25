@@ -216,6 +216,18 @@ body {
 .review-actions button { border: none; border-radius: 8px; padding: 8px 22px; font-weight: 600; cursor: pointer; }
 .review-actions .approve { background: var(--green); color: #ffffff; }
 .review-actions .reject { background: var(--red); color: #ffffff; }
+.review-actions .cancel { background: var(--bg2); color: var(--fg); border: 1px solid var(--border); }
+.review-actions .cancel:hover { border-color: var(--accent2); }
+
+/* 通用确认 / 输入弹窗(替代浏览器原生 confirm / prompt) */
+.confirm-box { width: min(420px, 90vw); }
+.confirm-text { font-size: 14px; line-height: 1.6; color: var(--fg); }
+.prompt-input {
+  width: 100%; box-sizing: border-box; margin-top: 12px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--fg);
+  font: inherit; font-size: 14px;
+}
+.prompt-input:focus { outline: none; border-color: var(--accent); }
 
 /* AskUser 选择题:内联进对话流的卡片(不再浮层弹窗,issue #134) */
 .chat-ask {
@@ -339,6 +351,8 @@ body {
 }
 .session-menu button:hover { background: var(--bg2); }
 .session-menu button.danger { color: var(--red); }
+/* 默认会话的删除按钮:置灰提示"不可删",但仍可点(点了弹 toast 说明,issue #141) */
+.session-menu button.danger.muted { opacity: .45; }
 
 /* ── 输入框上方的控制条:路由 / 权限 / 沙箱 / 工作模式,每项一颗胶囊 ── */
 .controls-bar {

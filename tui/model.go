@@ -1178,14 +1178,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case webDeleteSessionMsg:
 		// 删会话:流式中拒绝。删的是当前会话则删后切回默认并重载。
-		if !m.streaming && m.session != nil {
+		// 失败必须回传提示(issue #141):默认会话(rootDir 老会话)不可删,
+		// 此前 web 路径静默吞掉错误 → 用户点删除无反应、无报错,以为"删不掉"。
+		if m.streaming {
+			m.broadcast(web.Event{Kind: "notice", Text: T("session.streaming")})
+		} else if m.session != nil {
 			wasCurrent := m.session.CurrentConversation() == msg.id
-			if err := m.session.DeleteConversation(msg.id); err == nil {
-				if wasCurrent {
-					m.loadCurrentConversation() // 内部广播 session_loaded + 控制态(含会话列表)
-				} else {
-					m.broadcastSessions()
-				}
+			if err := m.session.DeleteConversation(msg.id); err != nil {
+				m.broadcast(web.Event{Kind: "notice", Text: T("session.delete.cant_default")})
+			} else if wasCurrent {
+				m.loadCurrentConversation() // 内部广播 session_loaded + 控制态(含会话列表)
+			} else {
+				m.broadcastSessions()
 			}
 		}
 		return m, nil

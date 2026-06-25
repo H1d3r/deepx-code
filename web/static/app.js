@@ -72,6 +72,9 @@ const I18N = {
     'session.delete': '删除',
     'session.rename.prompt': '输入新的会话名称:',
     'session.delete.confirm': '确定删除这个会话吗?此操作不可撤销。',
+    'session.delete.default_hint': '默认会话不可删除',
+    'confirm.ok': '确定',
+    'confirm.cancel': '取消',
     'panel.routing': '模型路由',
     'panel.mode': '权限模式',
     'panel.sandbox': '沙箱',
@@ -150,6 +153,9 @@ const I18N = {
     'session.delete': 'Delete',
     'session.rename.prompt': 'Enter a new conversation name:',
     'session.delete.confirm': 'Delete this conversation? This cannot be undone.',
+    'session.delete.default_hint': 'The default conversation cannot be deleted',
+    'confirm.ok': 'Confirm',
+    'confirm.cancel': 'Cancel',
     'panel.routing': 'Routing',
     'panel.mode': 'Permission',
     'panel.sandbox': 'Sandbox',
@@ -195,6 +201,8 @@ createApp({
       skillInstalling: false, skillMsg: '', skillErr: false,
       skillQuery: '', skillResults: [], skillSearching: false, skillSearched: false,
       toast: '', toastTimer: null, // 顶部临时提示(如压缩完成)
+      confirmBox: null, // 自定义确认弹窗:null=关闭;{ text, danger, onYes } 时显示(不用浏览器原生 confirm)
+      promptBox: null,  // 自定义输入弹窗:null=关闭;{ title, value, placeholder, onOk } 时显示(不用浏览器原生 prompt)
       input: '',
       connected: false,
       openIdx: -1, // 当前流式 assistant 消息下标
@@ -517,6 +525,25 @@ createApp({
       if (this.toastTimer) clearTimeout(this.toastTimer);
       this.toastTimer = setTimeout(() => { this.toast = ''; }, 3500);
     },
+    // askConfirm 弹 app 内自定义确认框(替代浏览器原生 confirm):opts = { text, danger, onYes }。
+    askConfirm(opts) { this.confirmBox = opts; },
+    confirmYes() {
+      const cb = this.confirmBox;
+      this.confirmBox = null;
+      if (cb && cb.onYes) cb.onYes();
+    },
+    confirmNo() { this.confirmBox = null; },
+    // askPrompt 弹 app 内自定义输入框(替代浏览器原生 prompt):opts = { title, value, placeholder, onOk }。
+    askPrompt(opts) {
+      this.promptBox = { title: '', value: '', placeholder: '', ...opts };
+      this.$nextTick(() => { if (this.$refs.promptInput) { this.$refs.promptInput.focus(); this.$refs.promptInput.select(); } });
+    },
+    promptOk() {
+      const cb = this.promptBox;
+      this.promptBox = null;
+      if (cb && cb.onOk) cb.onOk((cb.value || '').trim());
+    },
+    promptCancel() { this.promptBox = null; },
     async openSkill() {
       this.skillShow = true; this.skillMsg = ''; this.skillTab = 'installed';
       this.skillResults = []; this.skillSearched = false; this.skillQuery = '';
@@ -782,12 +809,21 @@ createApp({
     toggleMenu(id) { this.menuOpen = this.menuOpen === id ? null : id; },
     renameSession(s) {
       this.menuOpen = null;
-      const title = window.prompt(this.t('session.rename.prompt'), s.title || '');
-      if (title != null && title.trim()) this.post('/api/session-rename', { id: s.id, title: title.trim() });
+      this.askPrompt({
+        title: this.t('session.rename.prompt'),
+        value: s.title || '',
+        onOk: (title) => { if (title) this.post('/api/session-rename', { id: s.id, title }); },
+      });
     },
     deleteSession(s) {
       this.menuOpen = null;
-      if (window.confirm(this.t('session.delete.confirm'))) this.post('/api/session-delete', { id: s.id });
+      if (s.id === 'default') { this.showToast(this.t('session.delete.default_hint')); return; } // 默认会话不可删,即时反馈(issue #141)
+      // 用 app 内自定义确认弹窗,不用浏览器原生 confirm。
+      this.askConfirm({
+        text: this.t('session.delete.confirm'),
+        danger: true,
+        onYes: () => this.post('/api/session-delete', { id: s.id }),
+      });
     },
     setLang(lang) { this.post('/api/lang', { lang }); },
     setModel(role) { this.post('/api/model', { role }); },

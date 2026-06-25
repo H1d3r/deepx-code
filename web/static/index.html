@@ -36,7 +36,11 @@
             <button class="session-menu-btn" @click.stop="toggleMenu(s.id)">…</button>
             <div class="session-menu" v-if="menuOpen === s.id" @click.stop>
               <button @click="renameSession(s)">{{ t('session.rename') }}</button>
-              <button class="danger" @click="deleteSession(s)">{{ t('session.delete') }}</button>
+              <!-- 默认会话(rootDir 老会话)不可删:按钮置灰 + 悬停提示,但仍可点 —— 点了弹 toast 说明,
+                   绝不用 disabled(禁用按钮不触发 click,会变成"点了没反应",issue #141)。 -->
+              <button class="danger" :class="{ muted: s.id === 'default' }"
+                      :title="s.id === 'default' ? t('session.delete.default_hint') : ''"
+                      @click="deleteSession(s)">{{ t('session.delete') }}</button>
             </div>
           </div>
         </div>
@@ -243,6 +247,30 @@
         <div class="review-actions">
           <button class="approve" @click="review(true)">{{ t('review.approve') }}</button>
           <button class="reject" @click="review(false)">{{ t('review.reject') }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 通用确认弹层(替代浏览器原生 confirm,issue #141) -->
+    <div v-if="confirmBox" class="review-mask" @click.self="confirmNo()">
+      <div class="review-box confirm-box">
+        <div class="confirm-text">{{ confirmBox.text }}</div>
+        <div class="review-actions">
+          <button class="cancel" @click="confirmNo()">{{ t('confirm.cancel') }}</button>
+          <button :class="confirmBox.danger ? 'reject' : 'approve'" @click="confirmYes()">{{ t('confirm.ok') }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 通用输入弹层(替代浏览器原生 prompt) -->
+    <div v-if="promptBox" class="review-mask" @click.self="promptCancel()">
+      <div class="review-box confirm-box">
+        <div class="confirm-text">{{ promptBox.title }}</div>
+        <input class="prompt-input" ref="promptInput" v-model="promptBox.value"
+               :placeholder="promptBox.placeholder" @keyup.enter="promptOk()" @keyup.esc="promptCancel()">
+        <div class="review-actions">
+          <button class="cancel" @click="promptCancel()">{{ t('confirm.cancel') }}</button>
+          <button class="approve" @click="promptOk()">{{ t('confirm.ok') }}</button>
         </div>
       </div>
     </div>
