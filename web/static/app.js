@@ -316,10 +316,14 @@ createApp({
       v = (v == null ? '' : String(v)).replace(/\s+/g, ' ').trim();
       return v.length > 80 ? v.slice(0, 77) + '…' : v;
     },
-    scrollDown() {
+    scrollDown(force) {
+      // DOM 更新前先判断用户是否贴着底部(此刻还是旧高度):只有本来就在底部(或 force)才自动滚,
+      // 否则流式中每个 token 都把用户上滚查看历史的位置反复拽回底部(issue #145:思考中滚动条动不了)。
+      const el = this.$refs.msgList;
+      const stick = force || !el || (el.scrollHeight - el.scrollTop - el.clientHeight < 80);
       this.$nextTick(() => {
-        const el = this.$refs.msgList;
-        if (el) el.scrollTop = el.scrollHeight;
+        const e = this.$refs.msgList;
+        if (e && stick) e.scrollTop = e.scrollHeight;
       });
     },
     onKey(e) {
@@ -378,7 +382,15 @@ createApp({
       } catch (_) { /* 拉不到就空列表,选择器不显示 */ }
     },
     // syncMention 据输入框当前值 + 光标重算提及态。keyup / input / click 时调用。
-    onInput() { this.mention.hidden = false; this.syncMention(); },
+    onInput() { this.mention.hidden = false; this.syncMention(); this.autoGrow(); },
+    // 输入框随内容自适应高度:先归零再按 scrollHeight 设,封顶 200px(与 CSS max-height 一致)。
+    // 不做的话 textarea 固定 rows="1" 的高度,打多行也不长高(issue #145)。
+    autoGrow() {
+      const ta = this.$refs.ta;
+      if (!ta) return;
+      ta.style.height = 'auto';
+      ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
+    },
     syncMention() {
       const ta = this.$refs.ta;
       if (!ta) return;
@@ -426,6 +438,8 @@ createApp({
       if (!text) return;
       this.input = '';
       this.mention.active = false;
+      this.$nextTick(() => this.autoGrow()); // 发送后高度复位回单行
+      this.scrollDown(true);                 // 自己发的消息:强制跟到底部
       await fetch('/api/input', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
