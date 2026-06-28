@@ -547,6 +547,10 @@ func (m model) statusFooterLine(_ int) string {
 	if m.activeTool != "" {
 		left += dim(" · " + m.activeTool)
 	}
+	// API 退避重试中:状态行实时显示「重试 N/10」,醒目色(对标 Claude Code 的 attempt 计数)。
+	if m.retryNotice != "" {
+		left += dim(" · ") + lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true).Render("⟳ "+m.retryNotice)
+	}
 	// 不再右贴 "Esc 中断" —— 输入框 placeholder(misc.input_placeholder)已含,避免重复。
 	return left
 }

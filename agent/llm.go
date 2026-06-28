@@ -9,9 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -37,6 +40,11 @@ const (
 	// 就在下次请求前自动压缩历史(对标 Claude Code 的 auto-compact:压缩+继续,而非熔断停)。
 	// 取 80 留 ~20% 给本轮输出;压缩后历史缩到 ~20% 窗口,不会立刻反复触发。
 	compactTriggerPct = 80
+
+	// maxAPIRetries:streamOnce 在「进入流式之前」失败(网络错 / 429 限流 / 5xx 服务端错误)时的最大重试次数。
+	// 只重试这类瞬时错误,且只在还没吐任何 token 给 UI 时重试(进流式后的中途断不在此列,重试会重复吐字)。
+	// 退避 = 指数 + 抖动,429 优先听 Retry-After;每次重试前发 RetryNoticeMsg 让状态行显示「重试 N/10」(issue #147)。
+	maxAPIRetries = 10
 )
 
 // ModelEntry 单个 role 的完整连接配置 — base_url / model id / api_key 三件套。
@@ -69,6 +77,14 @@ type TokenMsg string                  // 助手正式回复(content)的文本增
 type ReasoningTokenMsg string         // 模型思考过程(reasoning_content)增量,TUI 用它驱动 spinner,不展示文字
 type StreamErrMsg struct{ Err error } // 错误
 type StreamDoneMsg struct{}           // 整个会话回合结束
+
+// RetryNoticeMsg:API 请求失败、进入退避重试前发给 UI,驱动状态行显示「重试 N/Max」(issue #147)。
+type RetryNoticeMsg struct {
+	Attempt int           // 第几次重试(从 1 起)
+	Max     int           // 重试次数上限
+	Delay   time.Duration // 本次退避等待时长
+	Reason  string        // 触发原因,如 "HTTP 429" / 网络错误
+}
 type ToolCallStartMsg struct {        // 即将调用工具
 	Name     string
 	Args     string
@@ -1022,6 +1038,40 @@ func clampMaxTokens(maxTokens, ctxWin int, convo []ChatMessage) int {
 	return maxTokens
 }
 
+// isRetryableStatus 判断 HTTP 状态码是否值得重试:429 限流、5xx 服务端错误、408/409/425 等瞬时类。
+// 400/401/403/404/422 是请求本身的问题(尤其 400 常是上下文超长),重试无意义 → 直接返回错误。
+func isRetryableStatus(code int) bool {
+	switch code {
+	case 408, 409, 425, 429, 500, 502, 503, 504:
+		return true
+	}
+	return false
+}
+
+// retryBackoff 计算第 attempt 次重试(从 0 起)的等待时长:
+// 429 优先按 Retry-After 响应头(秒数,夹到 60s);否则指数退避 1→2→4…封顶 30s,叠 +0~20% 抖动防同步重试雪崩。
+func retryBackoff(attempt int, retryAfter string) time.Duration {
+	if retryAfter != "" {
+		if secs, err := strconv.Atoi(strings.TrimSpace(retryAfter)); err == nil && secs > 0 {
+			return time.Duration(min(secs, 60)) * time.Second // 夹一下:防个别服务器给超大值
+		}
+	}
+	d := min(time.Second<<uint(attempt), 30*time.Second)        // 1,2,4,8,16,32… 封顶 30s
+	return d + time.Duration(rand.Int63n(int64(d)/5+1))         // +0~20% 抖动
+}
+
+// sleepCtx 等待 d;期间 ctx 取消(ESC/退出)则提前返回 false,让重试循环立刻中止。
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 func streamOnce(
 	ctx context.Context,
 	apiKey, baseURL, modelID string,
@@ -1052,23 +1102,53 @@ func streamOnce(
 	if err != nil {
 		return "", "", nil, "", nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return "", "", nil, "", nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	// 进流式之前的失败(网络错 / 429 / 5xx)在这里重试:此刻一个 token 都还没吐给 UI、
+	// assistant 消息也没进历史,重试是干净的。进流式后的中途断(scanner.Err)不在此列。
+	var resp *http.Response
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/chat/completions", bytes.NewReader(body))
+		if err != nil {
+			return "", "", nil, "", nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", "", nil, "", nil, err
+		var doErr error
+		resp, doErr = http.DefaultClient.Do(req)
+		if doErr == nil && resp.StatusCode == 200 {
+			break // 成功,进入下面的流式读取
+		}
+
+		// 失败分类:决定能否重试。
+		var (
+			retryable  bool
+			failErr    error  // 不可重试 / 重试耗尽时返回给上层
+			reason     string // 展示给用户的简短原因
+			retryAfter string // 仅非 200 分支可能有
+		)
+		if doErr != nil {
+			if ctx.Err() != nil { // ESC/退出导致的取消,不当作可重试错误
+				return "", "", nil, "", nil, ctx.Err()
+			}
+			retryable, failErr, reason = true, doErr, "网络错误"
+		} else {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			retryAfter = resp.Header.Get("Retry-After")
+			failErr = fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
+			retryable = isRetryableStatus(resp.StatusCode)
+			reason = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		}
+		if !retryable || attempt >= maxAPIRetries {
+			return "", "", nil, "", nil, failErr
+		}
+		d := retryBackoff(attempt, retryAfter)
+		ch <- RetryNoticeMsg{Attempt: attempt + 1, Max: maxAPIRetries, Delay: d, Reason: reason}
+		if !sleepCtx(ctx, d) { // 退避期间被 ESC/退出打断
+			return "", "", nil, "", nil, ctx.Err()
+		}
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(resp.Body)
-		return "", "", nil, "", nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
-	}
 
 	var (
 		contentBuilder   strings.Builder

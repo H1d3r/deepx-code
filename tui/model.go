@@ -174,6 +174,10 @@ type model struct {
 	// 仅用于输入框上方的活动状态行,告诉用户"此刻在跑哪个工具"。
 	activeTool string
 
+	// retryNotice 是 API 失败退避重试期间状态行显示的提示("重试 N/10 · HTTP 429 · 4s")。
+	// RetryNoticeMsg 时置;请求成功(Token/ReasoningToken/ToolCallStart)或彻底结束(Done/Err)时清空。
+	retryNotice string
+
 	// session 是当前 workspace 的持久化句柄。启动时建/打开 ~/.deepx/sessions/{sid}/,
 	// 写时机:user enter 后 + assistant 流结束(StreamDoneMsg)时各 append 一行。
 	// Memory 工具通过 tools.SetMemorySession 拿到同一句柄,扫 jsonl 命中关键词。
@@ -2303,12 +2307,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case agent.RetryNoticeMsg:
+		if m.streamCh == nil {
+			return m, nil
+		}
+		// API 失败退避重试:状态行实时显示「重试 N/10」,spinner 保持转动(对标 Claude Code 的 attempt 计数,issue #147)。
+		m.status = "thinking"
+		if !m.thinking {
+			m.thinking = true
+			cmds = append(cmds, m.spinner.Tick)
+		}
+		m.retryNotice = fmt.Sprintf("重试 %d/%d · %s · %ds", msg.Attempt, msg.Max, msg.Reason, int(msg.Delay.Seconds()+0.5))
+		return m, tea.Batch(append(cmds, agent.ListenToStream(m.streamCh))...)
+
 	case agent.ReasoningTokenMsg:
 		// streamCh 已 nil 说明 ESC/Ctrl+C 中断过了,丢弃残留消息
 		if m.streamCh == nil {
 			return m, nil
 		}
-		// 模型在思考。文字不进 chat,只确保 spinner 在转。
+		// 模型在思考。文字不进 chat,只确保 spinner 在转。重试成功后清掉重试提示。
+		m.retryNotice = ""
 		m.status = "thinking"
 		if !m.thinking {
 			m.thinking = true
@@ -2324,6 +2342,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "streaming"
 		m.thinking = false
 		m.activeTool = ""
+		m.retryNotice = "" // 流式开始 = 重试成功,清掉提示
 		text := string(msg)
 		m.currentReply.WriteString(text)
 		// 上一段若是 tools(刚执行完工具,模型继续说话),切回 assistant 段。
@@ -2339,6 +2358,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = "tool"
+		m.retryNotice = "" // 工具开始 = 上游请求已成功,清掉重试提示
 		// Todo 是可见清单的「全量快照更新」,不是一次干活动作:清单本身由下方 live overlay
 		// 实时勾选,每次更新再往 chat 打一行 "📌 Todo" 是纯噪音。所以 Todo 不留 chat 行、
 		// 也不计入"N 次工具调用"。其余工具照旧:紧凑单行 <icon> Name (主参数)。
@@ -2665,6 +2685,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streaming = false
 		m.thinking = false
 		m.activeTool = ""
+		m.retryNotice = "" // 重试耗尽/不可重试,落到这里报错,清掉重试提示
 		m.streamCh = nil
 		m.cancelAgent = nil
 		m.turnElapsed = time.Since(m.turnStartedAt)
