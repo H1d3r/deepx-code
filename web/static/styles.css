@@ -126,7 +126,7 @@ body {
 .mention-pop li.sel { background: var(--accent2); color: #fff; }
 .composer textarea {
   flex: 1; resize: none; background: transparent; color: var(--fg);
-  border: none; padding: 6px 0; font: inherit; line-height: 1.5; max-height: 160px; min-height: 26px;
+  border: none; padding: 6px 0; font: inherit; line-height: 1.5; max-height: 200px; min-height: 26px;
 }
 .composer textarea:focus { outline: none; }
 .composer button {
