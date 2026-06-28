@@ -42,7 +42,13 @@ func ImgOCR(args map[string]any) ToolResult {
 		return ToolResult{Output: fmt.Sprintf("OCR 失败: %v", err), Success: false}
 	}
 	if strings.TrimSpace(text) == "" {
-		return ToolResult{Output: "(图片中未识别到文字)", Success: true}
+		// 没识别到文字必须算「失败」:否则非视觉模型对一张读不出字的图反复 OCR,每轮都 Success=true
+		// 会把 maxNoProgressRounds 卡死断路器一直归零 → 无限重试(issue #146)。返回失败让断路器能介入,
+		// 并明确叫模型别再对同一张图 OCR。
+		return ToolResult{
+			Output:  "(图片中未识别到文字)。请勿对同一张图重复 OCR;如需图中内容,请让用户改用支持视觉的模型,或直接询问用户图里写了什么。",
+			Success: false,
+		}
 	}
 	return ToolResult{Output: text, Success: true}
 }

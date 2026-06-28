@@ -951,6 +951,9 @@ func (m *model) applyStaleShadow() {
 
 func (m model) submitUserInput(input string) (model, tea.Cmd) {
 	input = strings.TrimSpace(input)
+	// 删掉输入框里的 [Image #N] = 想移除那张图:据残留占位符裁剪待发图片列表,
+	// 否则删了占位符图却照发、非视觉模型还会反复 OCR(issue #146 的「删不掉」)。
+	m.attachedImagePaths = reconcileAttachedImages(input, m.attachedImagePaths)
 	if input == "" && len(m.attachedImagePaths) == 0 {
 		return m, nil
 	}
@@ -2917,6 +2920,30 @@ func saveAttachedImage(data []byte, index int) (string, error) {
 // insertImagePlaceholder 在输入框当前光标位置插入第 n 张图的引用。
 func (m *model) insertImagePlaceholder(n int) {
 	m.input.InsertString(fmt.Sprintf(" [Image #%d] ", n))
+}
+
+// reconcileAttachedImages 按输入框文本里还残留哪些 [Image #N] 占位符,裁剪待发图片列表。
+// 占位符编号 N 对应 attached[N-1](insertImagePlaceholder 插入时 N = 该图在列表里的序号,
+// 列表只增不减直到发送,故编号与下标始终对齐)。用户删掉某个 [Image #N] 文本 = 想移除那张图,
+// 这里把没了占位符的图从待发列表剔除 —— 让「删占位符」真正等于「不发那张图」(issue #146)。
+func reconcileAttachedImages(text string, attached []string) []string {
+	if len(attached) == 0 {
+		return attached
+	}
+	present := make(map[int]bool)
+	for _, mt := range imagePlaceholderRe.FindAllStringSubmatch(text, -1) {
+		var n int
+		if _, err := fmt.Sscanf(mt[1], "%d", &n); err == nil {
+			present[n] = true
+		}
+	}
+	kept := make([]string, 0, len(attached))
+	for i, p := range attached {
+		if present[i+1] {
+			kept = append(kept, p)
+		}
+	}
+	return kept
 }
 
 // roleKind 把内部 role 名映射成 chatLog 段 kind。

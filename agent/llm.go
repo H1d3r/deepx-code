@@ -889,6 +889,13 @@ func StartStream(
 							Output:  "你是视觉模型,这张图已经以图片形式内联在当前对话里了,请直接查看图片作答 —— 不要调用 OCR,也不要用 ls/find 去文件系统查找图片文件。",
 							Success: false,
 						}
+					} else if prev, done := priorOCRResult(tc.Function.Arguments, convo); done {
+						// 同一图片路径已 OCR 过 → 别重复:路径赖在历史里,模型会反复 OCR、用户喊停也拦不住(issue #146)。
+						// 回上次结果 + 硬性提示别再调,Success=false 让 maxNoProgressRounds 卡死断路器能介入。
+						result = tools.ToolResult{
+							Output:  "这张图之前已经 OCR 过了,结果是:\n" + prev + "\n\n请勿对同一张图重复 OCR。若仍需要图中信息,请直接询问用户图里写了什么,或让用户改用支持视觉的模型。",
+							Success: false,
+						}
 					} else {
 						result = executeTool(tc, mode, &lastFile)
 					}

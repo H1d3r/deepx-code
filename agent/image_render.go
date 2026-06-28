@@ -208,6 +208,49 @@ func ocrTargetsInlinedImage(argsJSON string, convo []ChatMessage) bool {
 	return false
 }
 
+// priorOCRResult 在历史里查这个图片路径是否「已经 OCR 过」:命中则返回上次结果文本 + true。
+//
+// 用途:用户在提示词里给了图片路径(纯文本,赖在历史里删不掉),模型每轮看到路径就反复调 OCR,
+// 用户说"别识别了"也拦不住(issue #146)。据此短路:第二次起不再真跑 OCR,直接回上次结果。
+//
+// 关联方式:OCR 的目标路径在 assistant 消息的 tool_calls[].arguments 里,而结果在对应的 tool 消息正文里,
+// 两者靠 tool_call_id 配对。先建 id→path 映射(只收 OCR 调用),再找该路径对应的 OCR 结果消息。
+func priorOCRResult(argsJSON string, convo []ChatMessage) (string, bool) {
+	var args struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal([]byte(argsJSON), &args) != nil {
+		return "", false
+	}
+	target := filepath.Clean(strings.TrimSpace(args.Path))
+	if target == "" {
+		return "", false
+	}
+	ocrCallPath := map[string]string{} // tool_call_id → OCR 目标路径
+	for _, m := range convo {
+		for _, tc := range m.ToolCalls {
+			if tc.Function.Name != "OCR" {
+				continue
+			}
+			var a struct {
+				Path string `json:"path"`
+			}
+			if json.Unmarshal([]byte(tc.Function.Arguments), &a) != nil {
+				continue
+			}
+			if p := filepath.Clean(strings.TrimSpace(a.Path)); p != "" {
+				ocrCallPath[tc.ID] = p
+			}
+		}
+	}
+	for _, m := range convo {
+		if m.Role == "tool" && ocrCallPath[m.ToolCallID] == target {
+			return m.Content, true
+		}
+	}
+	return "", false
+}
+
 // isImageInputUnsupported 判断错误是否是"该端点/模型不接受图片输入"(发了 base64 才会撞)。
 // 命中则上层把该模型降级为无视觉、改走 OCR 重发。匹配宽松些以兼容各家措辞。
 //   - MiMo: HTTP 404 "No endpoints found that support image input"
