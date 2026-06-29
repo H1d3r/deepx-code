@@ -24,7 +24,7 @@
 
     <main class="layout">
       <!-- 最左:会话列表(顶部新建按钮) -->
-      <nav class="sessions-pane">
+      <nav class="sessions-pane" :class="{ collapsed: sidebarCollapsed }">
         <button class="new-session-btn" :disabled="streaming" @click="newSession">{{ t('session.new') }}</button>
         <div class="sessions-list">
           <div v-if="!sessions.length" class="empty">—</div>
@@ -54,6 +54,18 @@
 
       <!-- 中:聊天 -->
       <section class="chat">
+        <!-- 顶栏:左右两个折叠按钮(始终可见,折叠后用它再展开) -->
+        <div class="chat-topbar">
+          <button class="pane-toggle" @click="toggleSidebar"
+                  :title="sidebarCollapsed ? t('pane.show_sessions') : t('pane.hide_sessions')">
+            {{ sidebarCollapsed ? '☰' : '⟨' }}
+          </button>
+          <div class="topbar-spacer"></div>
+          <button class="pane-toggle" @click="toggleStatus"
+                  :title="statusCollapsed ? t('pane.show_status') : t('pane.hide_status')">
+            {{ statusCollapsed ? '☷' : '⟩' }}
+          </button>
+        </div>
         <div class="messages" ref="msgList">
           <!-- 空会话:补一句欢迎语,避免一片空白 -->
           <div v-if="!messages.length && !streaming" class="welcome">
@@ -197,7 +209,7 @@
       </section>
 
       <!-- 右:状态(workspace 段在最上,下面状态/规划/工具三段常驻,无内容时留空) -->
-      <aside class="status">
+      <aside class="status" :class="{ collapsed: statusCollapsed }">
         <div class="sec">
           <div class="sec-title">◆ {{ t('workspace') }}</div>
           <div class="ws-path" :title="workspace">{{ workspace || '—' }}</div>
@@ -205,7 +217,8 @@
 
         <div class="sec" v-if="vendor">
           <div class="sec-title">◆ {{ t('panel.vendor') }}</div>
-          <div class="ws-path" :title="vendor">{{ vendor }}</div>
+          <div class="kv"><span>{{ t('panel.endpoint') }}</span><b class="path" :title="vendor">{{ vendor }}</b></div>
+          <div class="kv" v-if="balance"><span>{{ t('panel.balance') }}</span><b>{{ balance }}</b></div>
         </div>
 
         <div class="sec">

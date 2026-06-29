@@ -58,8 +58,14 @@ const I18N = {
     'skill.noresult': '无结果',
     workspace: '工作区',
     'panel.vendor': '模型厂商',
+    'panel.endpoint': '接口',
+    'panel.balance': '余额',
     'panel.curmodel': '当前模型',
     'panel.context': '上下文',
+    'pane.hide_sessions': '收起会话栏',
+    'pane.show_sessions': '展开会话栏',
+    'pane.hide_status': '收起状态栏',
+    'pane.show_status': '展开状态栏',
     'panel.todo': '待办',
     'panel.plan': '计划',
     'panel.tools': '工具调用',
@@ -139,8 +145,14 @@ const I18N = {
     'skill.noresult': 'No results',
     workspace: 'Workspace',
     'panel.vendor': 'Vendor',
+    'panel.endpoint': 'Endpoint',
+    'panel.balance': 'Balance',
     'panel.curmodel': 'Model',
     'panel.context': 'Context',
+    'pane.hide_sessions': 'Collapse sessions',
+    'pane.show_sessions': 'Expand sessions',
+    'pane.hide_status': 'Collapse status',
+    'pane.show_status': 'Expand status',
     'panel.todo': 'Todo',
     'panel.plan': 'Plan',
     'panel.tools': 'Tool Calls',
@@ -214,7 +226,11 @@ createApp({
       sandbox: 'native',
       workingMode: 'karpathy',
       codegraph: '',
+      balance: '',     // 账户剩余余额展示串(¥110.00);"" 不显示,"-" 不支持
       sessions: [],
+      // 两侧栏折叠态(本地持久化,刷新保留)
+      sidebarCollapsed: localStorage.getItem('deepx.sidebarCollapsed') === '1',
+      statusCollapsed: localStorage.getItem('deepx.statusCollapsed') === '1',
       menuOpen: null, // 当前展开"…"菜单的会话 id
       routingOptions: ROUTING_OPTIONS,
       modeOptions: MODE_OPTIONS,
@@ -390,6 +406,15 @@ createApp({
       if (!ta) return;
       ta.style.height = 'auto';
       ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
+    },
+    // 折叠/展开左侧会话栏 / 右侧状态栏,持久化到 localStorage(刷新保留)。
+    toggleSidebar() {
+      this.sidebarCollapsed = !this.sidebarCollapsed;
+      localStorage.setItem('deepx.sidebarCollapsed', this.sidebarCollapsed ? '1' : '0');
+    },
+    toggleStatus() {
+      this.statusCollapsed = !this.statusCollapsed;
+      localStorage.setItem('deepx.statusCollapsed', this.statusCollapsed ? '1' : '0');
     },
     syncMention() {
       const ta = this.$refs.ta;
@@ -654,6 +679,7 @@ createApp({
       if (s.sandbox) this.sandbox = s.sandbox;
       if (s.workingMode) this.workingMode = s.workingMode;
       this.codegraph = s.codegraph || '';
+      this.balance = s.balance || '';
       this.sessions = s.sessions || [];
       // 推断流式气泡:最后一条是 assistant 且还在 streaming 则继续往里追加
       const last = this.messages.length - 1;
@@ -788,6 +814,10 @@ createApp({
           break;
         case 'codegraph':
           if (ev.text) this.codegraph = ev.text;
+          break;
+        case 'balance':
+          // 余额可能从有值变 "-"(切到不支持的供应商),直接覆盖,不用非空守卫。
+          this.balance = ev.text || '';
           break;
         case 'sessions':
           this.sessions = ev.sessions || [];

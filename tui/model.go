@@ -2279,8 +2279,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case balanceMsg:
-		// 余额查询回执:更新右栏「模型厂商」段展示的剩余金额。
+		// 余额查询回执:更新右栏「模型厂商」段展示的剩余金额,并广播给 web 端动态更新。
 		m.applyBalance(msg)
+		m.broadcast(web.Event{Kind: "balance", Text: m.balance})
 		return m, nil
 
 	case agent.VisionUnsupportedMsg:

@@ -69,6 +69,7 @@ type Snapshot struct {
 	Sandbox     string        `json:"sandbox"`     // off | native | docker
 	WorkingMode string        `json:"workingMode"` // karpathy | openspec | superpowers
 	CodeGraph   string        `json:"codegraph"`   // 代码图谱状态 token
+	Balance     string        `json:"balance"`     // 账户剩余余额展示串(如 "¥110.00");"" 未探到,"-" 不支持
 	Sessions    []SessionInfo `json:"sessions"`
 }
 
@@ -331,6 +332,10 @@ func (h *Hub) apply(ev Event) Event {
 		if ev.Text != "" {
 			h.snap.CodeGraph = ev.Text
 		}
+
+	case "balance":
+		// 余额可能从有值变 "-"(切到不支持的供应商),不能用非空守卫,直接覆盖。
+		h.snap.Balance = ev.Text
 
 	case "sessions":
 		h.snap.Sessions = append([]SessionInfo(nil), ev.Sessions...)
