@@ -30,6 +30,12 @@ func ReadFile(args map[string]any) ToolResult {
 	if info.IsDir() {
 		return ToolResult{Output: "目标是目录,请使用 List 工具", Success: false}
 	}
+	// 非普通文件(FIFO/设备/socket)上 os.ReadFile 会永等写端 —— 而文件读取的
+	// 系统调用没有 context 版本、看门狗超时只能丢弃 goroutine 不能真正取消,
+	// 这一类会留永久孤儿 goroutine。源头直接拒掉,把"被丢弃 goroutine"封成有界。
+	if !info.Mode().IsRegular() {
+		return ToolResult{Output: "目标不是普通文件(管道/设备/符号链接环等),拒绝读取", Success: false}
+	}
 	if info.Size() > 10*1024*1024 {
 		return ToolResult{Output: "文件过大（>10MB）", Success: false}
 	}

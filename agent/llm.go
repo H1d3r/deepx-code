@@ -1349,7 +1349,55 @@ func executeTool(tc ToolCall, mode AgentMode, lastFile *string) tools.ToolResult
 	}
 	// 唯一收口:所有真正执行的工具(Read/Bash/Grep/WebFetch/MCP 等,主 agent / 子 agent / Explore 都走这里)
 	// 的返回值在进会话历史前统一限幅,防止单条超大结果撑爆上下文(issue #135)。
-	res := t.Executor(args)
+	res := runExecutorGuarded(t, args)
 	res.Output = clampToolOutput(t.Name, res.Output)
 	return res
+}
+
+// fsToolTimeout 列出"纯本地、无自带超时"的工具:它们理应秒级返回,一旦底层
+// stat/read 卡在病态挂载点(典型是 WSL /mnt/c 的 9p 在杀软扫描/文件被 Windows
+// 进程占用时 stall),或目标是非普通文件(FIFO/设备,os.ReadFile 永等写端),
+// 会无限阻塞、拖死整个工具循环(实测 Read 卡 50 分钟)。给它们套看门狗超时兜底。
+//
+// 刻意排除(各有自己的时长管控,套小超时反而会误杀合法长跑):
+//   - Bash:自带 timeout 参数(可设几百秒)
+//   - Fetch / Search:网络请求自带超时
+//   - Workflow / Explore:派子 agent,合法长跑数分钟
+//   - MCP 工具(mcp__ 前缀):各自服务端管控
+var fsToolTimeout = map[string]time.Duration{
+	"Read":      60 * time.Second,
+	"Write":     60 * time.Second,
+	"Update":    60 * time.Second,
+	"Glob":      60 * time.Second,
+	"Grep":      60 * time.Second,
+	"List":      60 * time.Second,
+	"Tree":      60 * time.Second,
+	"CodeGraph": 120 * time.Second,
+	"OCR":       120 * time.Second,
+}
+
+// runExecutorGuarded 执行 executor;对本地文件类工具套看门狗超时,防止病态挂载点
+// 把整个工具循环无限卡死。超时后给 LLM 返回失败让它自纠,而不是干等。
+//
+// executor 签名固定为 map[string]any→ToolResult、拿不到 context,无法真正取消那个
+// 已陷在内核 read() 里的 goroutine;但 done 为带缓冲 channel,系统调用一旦最终返回
+// goroutine 就能写入并退出,不会泄漏(只有真正永不返回的病态 fd 会留一个孤儿 goroutine,
+// 这是无 context 取消能力下可接受的代价——关键是工具循环已经解开了)。
+func runExecutorGuarded(t *tools.Tool, args map[string]any) tools.ToolResult {
+	d, guarded := fsToolTimeout[t.Name]
+	if !guarded {
+		return t.Executor(args)
+	}
+	done := make(chan tools.ToolResult, 1)
+	go func() { done <- t.Executor(args) }()
+	select {
+	case res := <-done:
+		return res
+	case <-time.After(d):
+		return tools.ToolResult{
+			Output: fmt.Sprintf("工具 %s 执行超时(%s)。目标可能位于卡死的挂载点"+
+				"(如 WSL /mnt/c 的 9p),或是非普通文件(管道/设备)。请换个路径或确认挂载可用。", t.Name, d),
+			Success: false,
+		}
+	}
 }
