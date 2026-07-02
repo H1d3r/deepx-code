@@ -17,6 +17,7 @@ const (
 	kindAssistant = "assistant"
 	kindTools     = "tools"
 	kindSystem    = "system"
+	kindThinking  = "thinking" // 模型 reasoning_content,次级暗显(/thinking 开关)
 )
 
 // chatSegment 是 chatLog 的一格。

@@ -52,6 +52,46 @@ func TestHubApply(t *testing.T) {
 	}
 }
 
+// TestHubThinking 验证 /thinking 打开后 reasoning_token 内联成 thinking 消息,
+// 且排在随后助手回复之前;关闭时不产生 thinking 消息。
+func TestHubThinking(t *testing.T) {
+	// 打开思考:reasoning 先于 token,thinking 消息应排在 assistant 之前。
+	h := NewHub("f", "p", "/tmp/ws", "zh")
+	h.Broadcast(Event{Kind: "show_thinking", Text: "on"})
+	h.Broadcast(Event{Kind: "user_message", Text: "hi"})
+	h.Broadcast(Event{Kind: "reasoning_token", Text: "let me "})
+	h.Broadcast(Event{Kind: "reasoning_token", Text: "think"})
+	h.Broadcast(Event{Kind: "token", Text: "answer"})
+	h.Broadcast(Event{Kind: "done"})
+
+	s := h.SnapshotCopy()
+	if !s.ShowThinking {
+		t.Fatalf("ShowThinking should be true")
+	}
+	// user / thinking / assistant —— 思考排在回复之前。
+	if len(s.Messages) != 3 || s.Messages[0].Role != "user" ||
+		s.Messages[1].Role != "thinking" || s.Messages[2].Role != "assistant" {
+		t.Fatalf("messages order wrong: %+v", s.Messages)
+	}
+	if s.Messages[1].Content != "let me think" {
+		t.Fatalf("thinking content = %q, want %q", s.Messages[1].Content, "let me think")
+	}
+	if s.Messages[2].Content != "answer" {
+		t.Fatalf("assistant content = %q, want answer", s.Messages[2].Content)
+	}
+
+	// 关闭思考:reasoning_token 不入消息流。
+	h2 := NewHub("f", "p", "/tmp/ws", "zh")
+	h2.Broadcast(Event{Kind: "show_thinking", Text: "off"})
+	h2.Broadcast(Event{Kind: "user_message", Text: "hi"})
+	h2.Broadcast(Event{Kind: "reasoning_token", Text: "hidden"})
+	h2.Broadcast(Event{Kind: "token", Text: "answer"})
+	s2 := h2.SnapshotCopy()
+	if len(s2.Messages) != 2 || s2.Messages[1].Role != "assistant" {
+		t.Fatalf("thinking off should not add thinking msg: %+v", s2.Messages)
+	}
+}
+
 // TestHubAskQuestions 验证 AskUser 选择题在快照里的维护:ask_request 写入、ask_resolved 清空、
 // 新一轮 user_message 也清空(避免上一轮残留的待答问题串到下一轮)。
 func TestHubAskQuestions(t *testing.T) {

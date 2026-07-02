@@ -87,6 +87,11 @@
               <div class="role">{{ t('you') }}</div>
               <div class="bubble user-text">{{ m.content }}</div>
             </template>
+            <!-- 思考过程暗显(/thinking 打开):内联在回复之前,次级弱化不抢焦点 -->
+            <template v-else-if="m.role === 'thinking'">
+              <div class="role">💭 {{ t('footer.thinking') }}</div>
+              <div class="bubble thinking-text">{{ m.content }}</div>
+            </template>
             <!-- AskUser 作答折叠档案:问题 + 已选答案,留在对话流里(issue #134) -->
             <template v-else-if="m.role === 'ask-record'">
               <div class="bubble ask-record md" v-html="render(m.content)"></div>

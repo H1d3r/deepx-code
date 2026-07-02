@@ -204,6 +204,8 @@ createApp({
       askSel: [],       // [题][选项] 勾选态
       // 活动状态行(对齐 TUI 输入框上方那条):状态 / 实时耗时 / 工具调用
       status: 'idle',   // idle | thinking | streaming | tool | error
+      showThinking: false, // /thinking 偏好,由快照 / show_thinking 事件与 TUI 同步
+      openThinkingIdx: -1, // 当前正在流式的 thinking 消息下标;-1 表示没有
       turnStart: 0,     // 本轮起始时间戳(ms)
       turnElapsed: 0,   // 上一轮总耗时(ms),非 streaming 时显示
       nowTick: 0,       // 由定时器刷新,驱动 streaming 时的实时耗时
@@ -680,10 +682,13 @@ createApp({
       if (s.workingMode) this.workingMode = s.workingMode;
       this.codegraph = s.codegraph || '';
       this.balance = s.balance || '';
+      this.showThinking = !!s.showThinking;
       this.sessions = s.sessions || [];
-      // 推断流式气泡:最后一条是 assistant 且还在 streaming 则继续往里追加
+      // 推断流式气泡:最后一条是 assistant / thinking 且还在 streaming 则继续往里追加
       const last = this.messages.length - 1;
-      this.openIdx = (this.streaming && last >= 0 && this.messages[last].role === 'assistant') ? last : -1;
+      const lastRole = last >= 0 ? this.messages[last].role : '';
+      this.openIdx = (this.streaming && lastRole === 'assistant') ? last : -1;
+      this.openThinkingIdx = (this.streaming && lastRole === 'thinking') ? last : -1;
       this.scrollDown();
     },
 
@@ -699,6 +704,7 @@ createApp({
           this.reviewPending = null;
           this.streaming = true;
           this.openIdx = -1;
+          this.openThinkingIdx = -1;
           // 状态行:开新一轮,起计时
           this.status = 'thinking';
           this.turnStart = Date.now();
@@ -706,6 +712,7 @@ createApp({
           this.nowTick = Date.now();
           break;
         case 'token':
+          this.openThinkingIdx = -1; // 正式回复开始,思考段结束
           if (this.openIdx < 0) {
             this.messages.push({ role: 'assistant', content: '' });
             this.openIdx = this.messages.length - 1;
@@ -715,12 +722,22 @@ createApp({
           break;
         case 'reasoning_token':
           this.status = 'thinking';
-          break; // 思考过程不入聊天
+          // 暗显思考流:内联成 thinking 消息,天然排在随后助手回复之前(对齐 TUI)
+          if (this.showThinking) {
+            if (this.openThinkingIdx < 0) {
+              this.messages.push({ role: 'thinking', content: '' });
+              this.openThinkingIdx = this.messages.length - 1;
+              this.openIdx = -1;
+            }
+            this.messages[this.openThinkingIdx].content += ev.text || '';
+          }
+          break;
         case 'tool_call':
           this.toolCalls.push({ id: ev.id, name: ev.name, args: ev.args || '', status: 'running', output: '' });
           // 内联进对话流;工具后另起 assistant 气泡。
           this.messages.push({ role: 'tool', id: ev.id, name: ev.name, args: ev.args || '', status: 'running', output: '' });
           this.openIdx = -1;
+          this.openThinkingIdx = -1;
           this.status = 'tool';
           break;
         case 'tool_result': {
@@ -764,6 +781,7 @@ createApp({
         case 'error':
           this.streaming = false;
           this.openIdx = -1;
+          this.openThinkingIdx = -1;
           // 冻结本轮总耗时,状态切到 完成 / 出错
           if (this.turnStart) this.turnElapsed = Date.now() - this.turnStart;
           this.status = ev.kind === 'error' ? 'error' : 'idle';
@@ -785,6 +803,7 @@ createApp({
         case 'interrupted':
           this.streaming = false;
           this.openIdx = -1;
+          this.openThinkingIdx = -1;
           this.reviewPending = null;
           this.askPending = null;
           this.askSel = [];
@@ -814,6 +833,10 @@ createApp({
           break;
         case 'codegraph':
           if (ev.text) this.codegraph = ev.text;
+          break;
+        case 'show_thinking':
+          // 只影响之后的思考显示;已内联的思考消息保留(对齐 TUI 的切换语义)
+          this.showThinking = ev.text === 'on';
           break;
         case 'balance':
           // 余额可能从有值变 "-"(切到不支持的供应商),直接覆盖,不用非空守卫。

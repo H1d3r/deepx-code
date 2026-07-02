@@ -111,6 +111,15 @@ body {
 .md th, .md td { border: 1px solid var(--border); padding: 4px 8px; }
 .md blockquote { border-left: 3px solid var(--accent2); margin: 8px 0; padding-left: 12px; color: var(--dim); }
 
+/* 思考过程暗显:虚线左边框 + 暗色斜体,视觉权重最低,保留换行 */
+.msg.thinking .role { color: var(--dim); }
+.thinking-text {
+  background: transparent; border: none; border-left: 2px dashed var(--border);
+  border-radius: 0; padding: 2px 0 2px 12px;
+  color: var(--dim); font-style: italic; font-size: 13px;
+  white-space: pre-wrap; word-break: break-word;
+}
+
 /* 打字动画 */
 .typing { display: inline-flex; gap: 4px; }
 .typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); animation: blink 1.2s infinite; }

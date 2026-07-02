@@ -42,6 +42,7 @@ var (
 	assistantBarColor = lipgloss.Color("141") // 淡紫
 	toolsBarColor     = lipgloss.Color("215") // 琥珀
 	systemBarColor    = lipgloss.Color("242") // 中灰
+	thinkingBarColor  = lipgloss.Color("240") // 暗灰,思考内容最弱视觉权重
 
 	// 用户回合做成"气泡":钢蓝底 + 白字 + 亮青块条,延续"用户=蓝"的语义,跟左对齐的 assistant/tools 错开。
 	userBubbleBg  = lipgloss.Color("24")  // 深钢蓝底
@@ -67,8 +68,23 @@ func barColorFor(kind string) color.Color {
 		return toolsBarColor
 	case kindSystem:
 		return systemBarColor
+	case kindThinking:
+		return thinkingBarColor
 	}
 	return systemBarColor
+}
+
+// dimThinking 把思考内容渲染成次级暗显(暗灰 + 斜体),并按 width 软换行。
+// 不走 glamour:思考是模型的内部独白,弱化显示避免抢正式回复的视觉焦点。
+func dimThinking(s string, width int) string {
+	if s == "" {
+		return ""
+	}
+	st := lipgloss.NewStyle().Foreground(thinkingBarColor).Italic(true)
+	if width > 0 {
+		st = st.Width(width)
+	}
+	return st.Render(s)
 }
 
 // applyQuoteBar 在已渲染 ANSI 文本左侧画一根色条,做两级引用。
@@ -89,7 +105,7 @@ func applyQuoteBar(content, kind string) string {
 		indent  string
 	)
 	switch kind {
-	case kindTools:
+	case kindTools, kindThinking:
 		barChar = "│" // 细线,作为二级 quote
 		indent = "  " // 2 列缩进,视觉上嵌入到上方 assistant 段
 	default:
@@ -134,7 +150,7 @@ func renderUserBubble(text string, viewportW int) string {
 // tools 段比一级段额外扣 2 列缩进。
 func barInnerWidth(viewportW int, kind string) int {
 	bar := barColWidthLevel1
-	if kind == kindTools {
+	if kind == kindTools || kind == kindThinking {
 		bar = barColWidthLevel2
 	}
 	w := viewportW - bar

@@ -307,6 +307,9 @@ type model struct {
 	// hideStatusPanel:隐藏右侧状态栏,chat 铺满整宽(Ctrl+B / /status 切换,记忆到 meta)。
 	hideStatusPanel bool
 
+	// showThinking:把模型 reasoning_content 暗显进对话流(/thinking 切换,记忆到 meta)。默认关。
+	showThinking bool
+
 	// docker 沙箱镜像拉取进度(/sandbox docker 切换时,镜像不在本地才拉)。
 	dockerPulling    bool
 	dockerPullImage  string
@@ -592,7 +595,8 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 		mode:            agent.AgentMode_Auto,
 		workingMode:     agent.WorkingModeDefault, // 默认 kp;下方从 session 恢复
 		status:          "idle",
-		hideStatusPanel: metaGet().HideStatus, // 记忆上次的状态栏显隐
+		hideStatusPanel: metaGet().HideStatus,  // 记忆上次的状态栏显隐
+		showThinking:    metaGet().ShowThinking, // 记忆上次的思考显隐
 		spinner:         sp,
 		workspace:       wd,
 		setupInput:      si,
@@ -833,6 +837,14 @@ func endpointHost(models agent.ModelConfig) string {
 	return host
 }
 
+// onOff 把布尔映射成 web 控制事件用的 "on"/"off" 文本。
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
+}
+
 // broadcastControlState 把全部控制态(权限模式 / 沙箱 / 工作模式 / 代码图谱 + 会话列表)
 // 推给 web,使浏览器状态栏与 TUI 对齐。启动时与每次切会话后调用。
 func (m model) broadcastControlState() {
@@ -845,6 +857,7 @@ func (m model) broadcastControlState() {
 	m.broadcast(web.Event{Kind: "sandbox", Text: string(tools.CurrentSandboxMode())})
 	m.broadcast(web.Event{Kind: "working_mode", Text: string(m.workingMode)})
 	m.broadcast(web.Event{Kind: "codegraph", Text: tools.CodeGraphStatus()})
+	m.broadcast(web.Event{Kind: "show_thinking", Text: onOff(m.showThinking)})
 	m.broadcastSessions()
 }
 
@@ -2326,12 +2339,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.streamCh == nil {
 			return m, nil
 		}
-		// 模型在思考。文字不进 chat,只确保 spinner 在转。重试成功后清掉重试提示。
+		// 模型在思考。默认只驱动 spinner;/thinking 打开后把 reasoning 增量暗显进 chat。
 		m.retryNotice = ""
 		m.status = "thinking"
 		if !m.thinking {
 			m.thinking = true
 			cmds = append(cmds, m.spinner.Tick)
+		}
+		if m.showThinking {
+			m.chatContent.EnsureKind(kindThinking, "")
+			m.chatContent.Append(string(msg))
+			m.refreshViewport()
 		}
 		return m, tea.Batch(append(cmds, agent.ListenToStream(m.streamCh))...)
 
@@ -3146,6 +3164,8 @@ func (m *model) handleSlashCommand(input string) tea.Cmd {
 		return m.startManualCompaction()
 	case "/status":
 		m.toggleStatusPanel()
+	case "/thinking":
+		m.toggleThinking()
 	case "/new":
 		m.startNewConversation()
 	case "/sessions":
@@ -3842,9 +3862,12 @@ func (m *model) renderChatBaseContent(w int) string {
 			return renderUserBubble(stripVS16(strings.TrimRight(ensureEmojiSpacing(raw), "\n")), width)
 		}
 		var inner string
-		if kind == kindTools {
+		switch kind {
+		case kindTools:
 			inner = colorizeDiffBlock(ensureEmojiSpacingANSI(ensureEmojiSpacing(raw)))
-		} else {
+		case kindThinking:
+			inner = dimThinking(ensureEmojiSpacing(raw), barInnerWidth(width, kind))
+		default:
 			inner = ensureEmojiSpacingANSI(m.renderMarkdown(ensureEmojiSpacing(raw), barInnerWidth(width, kind)))
 		}
 		inner = stripVS16(strings.TrimRight(inner, "\n"))

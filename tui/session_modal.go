@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"deepx/agent"
+	"deepx/web"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -144,6 +145,20 @@ func (m *model) toggleStatusPanel() {
 	m.chatViewport.SetHeight(vpH)
 	m.input.SetWidth(leftW - inputGutterWidth) // 输入区跟着左列宽变化(状态栏显隐改变 leftW)
 	m.selecting = false
+	m.refreshViewport()
+}
+
+// toggleThinking 显隐"模型思考(reasoning_content)暗显"并记忆到 meta。
+// 只影响之后回合的思考渲染,不改已有段;给一条系统提示让用户知道当前状态。
+func (m *model) toggleThinking() {
+	m.showThinking = !m.showThinking
+	metaUpdate(func(mm *meta) { mm.ShowThinking = m.showThinking })
+	m.broadcast(web.Event{Kind: "show_thinking", Text: onOff(m.showThinking)}) // 同步给 web
+	if m.showThinking {
+		m.chatContent.Open(kindSystem, T("thinking.on"))
+	} else {
+		m.chatContent.Open(kindSystem, T("thinking.off"))
+	}
 	m.refreshViewport()
 }
 

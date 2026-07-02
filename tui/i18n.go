@@ -169,6 +169,18 @@ var translations = map[string]map[Lang]string{
 		LangZH: "显示/隐藏右侧状态栏(也可按 Ctrl+B)",
 		LangEN: "Show/hide the right status panel (or press Ctrl+B)",
 	},
+	"cmd.thinking.desc": {
+		LangZH: "显示/隐藏模型思考过程(reasoning),暗显在对话流",
+		LangEN: "Show/hide the model's thinking (reasoning), dimmed in the chat",
+	},
+	"thinking.on": {
+		LangZH: "**已开启思考显示** — 之后回合会把模型的思考过程暗显在对话流(仅交互界面,不影响管道输出)。",
+		LangEN: "**Thinking display on** — the model's reasoning will show dimmed in the chat on following turns (interactive only, not piped output).",
+	},
+	"thinking.off": {
+		LangZH: "**已关闭思考显示** — 之后回合只用 spinner 表示思考,不再打印思考内容。",
+		LangEN: "**Thinking display off** — following turns show only a spinner while thinking, without printing the reasoning.",
+	},
 	"cmd.web-config.desc": {
 		LangZH: "配置 web 面板的绑定 IP 与端口(立即生效并显示新地址)",
 		LangEN: "Configure web dashboard bind IP & port (applied immediately, shows the new URL)",
@@ -327,6 +339,7 @@ var translations = map[string]map[Lang]string{
 			"- `/new` — 开启全新对话(当前对话已保存,可在 /sessions 找回)\n" +
 			"- `/sessions` — 历史对话列表(↑/↓ 选,Enter 切换)\n" +
 			"- `/status` — 显示/隐藏右侧状态栏(也可按 Ctrl+B)\n" +
+			"- `/thinking` — 显示/隐藏模型思考过程(reasoning)\n" +
 			"- `/web-config` — 配置 web 面板绑定 IP / 端口(局域网访问,立即生效并显示新地址)\n" +
 			"- `/sandbox` — 沙箱模式:`off`(关闭)/ `native`(OS 隔离,默认)/ `docker`(容器隔离)\n" +
 			"- `/working-mode` — 工作模式:`karpathy`(务实)/ `openspec`(规格驱动)/ `superpowers`(全流程严谨),默认 karpathy\n" +
@@ -361,6 +374,7 @@ var translations = map[string]map[Lang]string{
 			"- `/new` — Start a brand-new conversation (current one is saved, see /sessions)\n" +
 			"- `/sessions` — Conversation history (↑/↓ select, Enter switch)\n" +
 			"- `/status` — Show/hide the right status panel (or press Ctrl+B)\n" +
+			"- `/thinking` — Show/hide the model's thinking (reasoning)\n" +
 			"- `/web-config` — Configure web dashboard bind IP / port (LAN access, applied immediately, shows the new URL)\n" +
 			"- `/sandbox` — Sandbox mode: `off` / `native` (OS isolation, default) / `docker` (container isolation)\n" +
 			"- `/working-mode` — Working mode: `karpathy` (pragmatic) / `openspec` (spec-driven) / `superpowers` (rigorous), default karpathy\n" +

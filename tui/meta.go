@@ -26,6 +26,9 @@ type meta struct {
 	// HideStatus 记忆右侧状态栏的显隐选择(Ctrl+B / /status 切换),重启保持。
 	HideStatus bool `json:"hide_status,omitempty"`
 
+	// ShowThinking 记忆是否把模型思考(reasoning_content)暗显进对话流(/thinking 切换)。默认关。
+	ShowThinking bool `json:"show_thinking,omitempty"`
+
 	// Sandbox 记忆沙箱模式("native"/"docker",/sandbox 切换)。空 = native(默认)。
 	Sandbox string `json:"sandbox,omitempty"`
 	// SandboxDockerImage 记忆 docker 沙箱用的镜像(/sandbox docker <image>)。空 = ubuntu:24.04。

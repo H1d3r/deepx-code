@@ -62,6 +62,10 @@ type Snapshot struct {
 	ReviewPending *ReviewInfo    `json:"reviewPending"`
 	AskQuestions  []agent.AskQuestion `json:"askQuestions"` // 非空 = 有待答选择题
 
+	// ShowThinking 是 /thinking 偏好,与 TUI 的 meta.ShowThinking 同步。打开时模型思考
+	// (reasoning_content)会作为 role=="thinking" 的消息内联进 Messages(排在其后的回复之前)。
+	ShowThinking bool `json:"showThinking,omitempty"`
+
 	// 控制态,与 TUI 对齐:路由 / 权限模式 / 沙箱 / 工作模式 / 代码图谱状态 + 会话列表。
 	Vendor      string        `json:"vendor"`      // 模型厂商(api host)
 	Routing     string        `json:"routing"`     // auto | flash | pro(模型路由 pin)
@@ -86,6 +90,7 @@ type Hub struct {
 	snap    Snapshot
 
 	openAssistant int // 当前正在流式的 assistant 消息下标;-1 表示没有
+	openThinking  int // 当前正在流式的 thinking 消息下标;-1 表示没有
 	toolSeq       int // 工具调用 ID 自增
 }
 
@@ -109,6 +114,7 @@ func NewHub(flashModel, proModel, workspace, lang string) *Hub {
 			WorkingMode: "karpathy",
 		},
 		openAssistant: -1,
+		openThinking:  -1,
 	}
 }
 
@@ -191,8 +197,10 @@ func (h *Hub) apply(ev Event) Event {
 		h.snap.AskQuestions = nil
 		h.snap.Streaming = true
 		h.openAssistant = -1
+		h.openThinking = -1
 
 	case "token":
+		h.openThinking = -1 // 正式回复开始,思考段结束
 		if h.openAssistant < 0 {
 			h.snap.Messages = append(h.snap.Messages, Message{Role: "assistant"})
 			h.openAssistant = len(h.snap.Messages) - 1
@@ -200,7 +208,16 @@ func (h *Hub) apply(ev Event) Event {
 		h.snap.Messages[h.openAssistant].Content += ev.Text
 
 	case "reasoning_token":
-		// 思考过程不进聊天气泡;前端可用它显示 "thinking…"。快照不存。
+		// 仅在 showThinking 打开时把思考内联成 role=="thinking" 消息(与 TUI 对称)。
+		// 内联进 Messages 而非单独字段:天然排在随后助手回复之前,且随快照重连不丢。
+		if h.snap.ShowThinking {
+			if h.openThinking < 0 {
+				h.snap.Messages = append(h.snap.Messages, Message{Role: "thinking"})
+				h.openThinking = len(h.snap.Messages) - 1
+				h.openAssistant = -1
+			}
+			h.snap.Messages[h.openThinking].Content += ev.Text
+		}
 
 	case "tool_call":
 		h.toolSeq++
@@ -214,6 +231,7 @@ func (h *Hub) apply(ev Event) Event {
 			Role: "tool", ID: id, Name: ev.Name, Args: ev.Args, Status: "running",
 		})
 		h.openAssistant = -1
+		h.openThinking = -1
 
 	case "tool_result":
 		// 配对到最近一个同名 running 工具。
@@ -278,10 +296,12 @@ func (h *Hub) apply(ev Event) Event {
 	case "done":
 		h.snap.Streaming = false
 		h.openAssistant = -1
+		h.openThinking = -1
 
 	case "error":
 		h.snap.Streaming = false
 		h.openAssistant = -1
+		h.openThinking = -1
 
 	case "ask_request":
 		h.snap.AskQuestions = ev.Questions
@@ -292,6 +312,8 @@ func (h *Hub) apply(ev Event) Event {
 		h.snap.Streaming = false
 		h.snap.ReviewPending = nil
 		h.snap.AskQuestions = nil
+		h.openAssistant = -1
+		h.openThinking = -1
 	case "review_request":
 		h.snap.ReviewPending = &ReviewInfo{Name: ev.Name, Args: ev.Args}
 
@@ -331,6 +353,13 @@ func (h *Hub) apply(ev Event) Event {
 	case "codegraph":
 		if ev.Text != "" {
 			h.snap.CodeGraph = ev.Text
+		}
+
+	case "show_thinking":
+		// 只影响之后的思考显示;已内联的 thinking 消息保留(对齐 TUI 的切换语义)。
+		h.snap.ShowThinking = ev.Text == "on"
+		if !h.snap.ShowThinking {
+			h.openThinking = -1
 		}
 
 	case "balance":
