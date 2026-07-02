@@ -329,13 +329,17 @@ step "Setting up shell PATH"
 if echo ":$PATH:" | grep -q ":$BIN_DIR:"; then
     success "${BIN_DIR} 已在 PATH"
 else
-    # 选 rc 文件:优先 SHELL 当前,fallback 都加一份
+    # 选 rc 文件。两步走:
+    #   (1) append_rc:往所有【已存在】的 rc 追加一份,belt-and-suspenders(用户常多 shell 混用)。
+    #   (2) ensure_rc:按当前 $SHELL 保证【交互式 shell 必读】的那个 rc 存在且含 PATH(缺则创建)。
+    # 为什么需要 (2):旧逻辑"文件不存在就跳过"会让"只有 .zprofile、没 .zshrc"的 Mac(Homebrew
+    # 引导只建 .zprofile)一个 rc 都写不到 → deepx 装了却不在 PATH。而且 .zprofile 只在登录 shell 读,
+    # tmux / 子 shell / 手敲 zsh 这类非登录交互只读 .zshrc —— 所以落点必须是覆盖全交互场景的 .zshrc。
     LINE='export PATH="'"$BIN_DIR"':$PATH"'
     append_rc() {
         local rc="$1"
         # 注意:必须 return 0。裸 return 会带回上一条命令([ -f ])的退出码,
-        # 文件不存在时即 1,在 set -e 下会让整个安装在第一个不存在的 rc(常见是 .zshrc)处中止,
-        # 导致 PATH 从未写入、deepx 装了却不在 PATH。Mac 默认有 .zshrc 故不暴露,Linux 必中。
+        # 文件不存在时即 1,在 set -e 下会让整个安装在第一个不存在的 rc 处中止。
         [ -f "$rc" ] || return 0
         if grep -Fq "$BIN_DIR" "$rc"; then
             info "PATH 已在 $(basename "$rc") 配过"
@@ -344,16 +348,39 @@ else
         printf "\n# deepx\n%s\n" "$LINE" >> "$rc"
         success "已加入 $(basename "$rc")"
     }
+    # 缺则创建:保证这个 rc 一定拿到 PATH。
+    ensure_rc() {
+        local rc="$1"
+        if [ -f "$rc" ] && grep -Fq "$BIN_DIR" "$rc"; then
+            info "PATH 已在 $(basename "$rc") 配过"
+            return 0
+        fi
+        printf "\n# deepx\n%s\n" "$LINE" >> "$rc"
+        success "已写入 $(basename "$rc")"
+    }
     append_rc "$HOME/.zshrc"
+    append_rc "$HOME/.zprofile"
     append_rc "$HOME/.bashrc"
     append_rc "$HOME/.bash_profile"
     # Linux 桌面环境(sddm/gdm/lightdm)通常走 .profile 而非 .bashrc
     append_rc "$HOME/.profile"
 
-    # fish:不同语法
+    # 按当前 shell 保底:确保"交互式 shell 必读的 rc"存在(缺则建)。
+    #   zsh  → .zshrc:登录+非登录交互都读,覆盖 Terminal/iTerm/tmux/子shell/VSCode(默认登录)
+    #   bash → .bash_profile(mac 登录 shell 读)+ .bashrc(非登录交互读),两个都要
+    #   fish → 交给下面的 config.fish 专段(语法不同)
+    case "$(basename "${SHELL:-sh}")" in
+        zsh)  ensure_rc "$HOME/.zshrc" ;;
+        bash) ensure_rc "$HOME/.bash_profile"; ensure_rc "$HOME/.bashrc" ;;
+        fish) : ;;
+        *)    ensure_rc "$HOME/.profile" ;;
+    esac
+
+    # fish:不同语法。$SHELL 是 fish 时缺文件也要建(同 zsh/bash 的保底);否则仅在已存在时追加。
     FISH_CFG="$HOME/.config/fish/config.fish"
-    if [ -f "$FISH_CFG" ]; then
-        if grep -Fq "$BIN_DIR" "$FISH_CFG"; then
+    if [ "$(basename "${SHELL:-sh}")" = fish ] || [ -f "$FISH_CFG" ]; then
+        mkdir -p "$(dirname "$FISH_CFG")"
+        if [ -f "$FISH_CFG" ] && grep -Fq "$BIN_DIR" "$FISH_CFG"; then
             info "PATH 已在 config.fish 配过"
         else
             printf "\n# deepx\nfish_add_path %s\n" "$BIN_DIR" >> "$FISH_CFG"
@@ -387,7 +414,7 @@ echo "  下一步:"
 echo "    ⚠ 当前 shell 还没拿到新 PATH(子进程改不了父进程环境)。任选其一让它生效:"
 echo "         exec \$SHELL                # 推荐:换个新 shell 替代当前(README 推荐的装命令已自动做这件事)"
 echo "         source ~/.bashrc           # 或:bash 用户重读 rc"
-echo "         source ~/.zshrc            # 或:zsh 用户重读 rc"
+echo "         source ~/.zshrc            # 或:zsh 用户重读 rc(登录 shell 也可 source ~/.zprofile)"
 echo "         source ~/.config/fish/config.fish   # 或:fish"
 echo ""
 echo "    新开的 terminal 自动生效,不用做任何事。"
