@@ -36,10 +36,13 @@ const (
 	// (见 issue #84:旧的固定 100 轮上限会把合法长任务在中途打断、需手动继续。)
 	maxNoProgressRounds = 15
 
-	// compactTriggerPct:单个 turn 内,上一轮真实 prompt tokens 占模型上下文窗口达到这个百分比,
-	// 就在下次请求前自动压缩历史(对标 Claude Code 的 auto-compact:压缩+继续,而非熔断停)。
-	// 取 70 留 ~30% 给本轮输出;压缩后历史缩到 ~20% 窗口,不会立刻反复触发。
-	compactTriggerPct = 70
+	// 压缩/回收的触发阈值不再是固定百分比,而是按窗口大小动态算(见 CompactTriggerTokens)。
+	// 曾用固定 70%:对小窗口合适(留 ~30% 给输出+单轮暴涨缓冲),但大窗口(1M)按 70% 就压会白丢
+	// 几十万本可保留的上下文、还多压几次。改为「保留 headroom 随窗口缩放、封顶」——主流窗口
+	// (128K~256K)行为不变(≈70%),大窗口触发线自然升到 ~80%+,极小窗口更早压(暴涨风险大)。
+	compactHeadroomPct   = 30      // headroom 基准:窗口的这个比例
+	compactHeadroomFloor = 30_000  // headroom 绝对下限:极小窗口也留够单轮暴涨缓冲
+	compactHeadroomCap   = 180_000 // headroom 绝对上限:大窗口不必按比例留那么多,省得过早压
 
 	// maxAPIRetries:streamOnce 在「进入流式之前」失败(网络错 / 429 限流 / 5xx 服务端错误)时的最大重试次数。
 	// 只重试这类瞬时错误,且只在还没吐任何 token 给 UI 时重试(进流式后的中途断不在此列,重试会重复吐字)。
@@ -85,7 +88,7 @@ type RetryNoticeMsg struct {
 	Delay   time.Duration // 本次退避等待时长
 	Reason  string        // 触发原因,如 "HTTP 429" / 网络错误
 }
-type ToolCallStartMsg struct {        // 即将调用工具
+type ToolCallStartMsg struct { // 即将调用工具
 	Name     string
 	Args     string
 	ReviewCh chan bool // review 模式下的审核通道,nil = 无需审核
@@ -130,7 +133,7 @@ type CompactedMsg struct {
 }
 
 // CompactingMsg 轮内自动压缩「开始」时发给 UI:RunCompression 是一次同步的 LLM 调用,
-// 最长会卡 compactionTimeout(2 分钟),期间 agent 停在那儿、一个 token 也不吐。不发这条的话
+// 最长会卡 compactionTimeout(10 分钟),期间 agent 停在那儿、一个 token 也不吐。不发这条的话
 // 界面上只有普通的流式 spinner,用户看不出在压缩,只觉得卡死了(issue #201)。
 // 收到后 UI 把活动状态行切成「压缩中…」,由 CompactedMsg(成功)或 CompactFailedMsg(失败)复位。
 type CompactingMsg struct{}
@@ -666,7 +669,7 @@ func StartStream(
 				for i := range convo {
 					curEst += MsgTokens(convo[i]) // 实时估算(与 clampMaxTokens 同口径);可后续复用其结果省一遍
 				}
-				if max(lastPromptTokens, curEst) >= ctxWin*compactTriggerPct/100 {
+				if max(lastPromptTokens, curEst) >= CompactTriggerTokens(ctxWin) {
 					if n, freed := reclaimToolOutputs(convo, ctxWin); n > 0 {
 						// 回收后 prompt 估算 = system+messages(curEst 已含,减去净回收量)+ tools schema。
 						estAfter := curEst - freed + toolSpecsTokens
@@ -680,10 +683,10 @@ func StartStream(
 			// 对标 Claude Code:压缩 convo[1:] 成摘要、重建 [system(新摘要)]+尾部,新摘要经 CompactedMsg
 			// 回传 TUI 存 session(否则被剥的 system 摘要会丢失),history 截断经 HistoryUpdateMsg 同步。
 			if ctxWin := currentEntry.ContextWindow; !inLoopCompactOff && ctxWin > 0 &&
-				lastPromptTokens >= ctxWin*compactTriggerPct/100 &&
+				lastPromptTokens >= CompactTriggerTokens(ctxWin) &&
 				len(convo) > 0 && convo[0].Role == "system" {
 				hist := convo[1:]
-				ch <- CompactingMsg{} // 先亮状态行:下面这行最长会卡 2 分钟,期间不吐任何 token
+				ch <- CompactingMsg{} // 先亮状态行:下面这行最长会卡 10 分钟,期间不吐任何 token
 				sum, cutIdx, turns, cerr := RunCompression(convo[0].Content, MarshalToolSpecs(toolSpecs), hist, currentEntry, ctxWin)
 				if cerr != nil {
 					inLoopCompactOff = true // 压不动(历史太短/摘要失败)→ 本轮不再尝试,退回撞窗口报错
@@ -698,7 +701,7 @@ func StartStream(
 					estAfter := EstimatePromptTokens(workspace, skillCatalog, summary, kept)
 					// 防死循环:若压缩后历史仍超阈值(最近 5 轮本身就超窗口,RunCompression 切点缩不动),
 					// 再压也无效 → 本轮关掉循环内压缩,退回撞窗口优雅报错,避免反复压缩刷请求。
-					if estAfter >= ctxWin*compactTriggerPct/100 {
+					if estAfter >= CompactTriggerTokens(ctxWin) {
 						inLoopCompactOff = true
 					}
 					// 摘要 + 截断历史 + 新量级一条送达,原子生效(见 CompactedMsg 注释)。
@@ -1205,6 +1208,24 @@ func clampMaxTokens(maxTokens, ctxWin int, convo []ChatMessage) int {
 	return maxTokens
 }
 
+// CompactTriggerTokens 返回「上下文用量达到多少 token 就触发压缩 / 回收」的动态阈值。
+//
+// = 窗口 - headroom,headroom = clamp(窗口×30%, 30K, 180K),再夹「不超过窗口 60%」防极小窗口留过头。
+// headroom 是留给「本轮输出 + 触发到实际压缩之间继续追加的工具结果 + clamp 的 5% 保险」的空间。
+//   - 128K~256K 主流窗口:headroom≈30% → 触发≈70%,与旧固定值一致,不改变现有行为。
+//   - ≥600K 大窗口:headroom 封顶 180K → 触发线升到 ~80%+,少丢上下文、少压几次。
+//   - 极小窗口:headroom 撞下限/60% 上限 → 触发线降低,更早压(单轮暴涨占比大,本就该早压)。
+func CompactTriggerTokens(ctxWin int) int {
+	if ctxWin <= 0 {
+		return 0
+	}
+	headroom := ctxWin * compactHeadroomPct / 100
+	headroom = max(headroom, compactHeadroomFloor) // 下限:极小窗口也留够暴涨缓冲
+	headroom = min(headroom, compactHeadroomCap)   // 上限:大窗口不必按比例留那么多
+	headroom = min(headroom, ctxWin*60/100)        // 别把 headroom 撑到吃掉大半窗口
+	return ctxWin - headroom
+}
+
 // isRetryableStatus 判断 HTTP 状态码是否值得重试:429 限流、5xx 服务端错误、408/409/425 等瞬时类。
 // 400/401/403/404/422 是请求本身的问题(尤其 400 常是上下文超长),重试无意义 → 直接返回错误。
 func isRetryableStatus(code int) bool {
@@ -1223,8 +1244,8 @@ func retryBackoff(attempt int, retryAfter string) time.Duration {
 			return time.Duration(min(secs, 60)) * time.Second // 夹一下:防个别服务器给超大值
 		}
 	}
-	d := min(time.Second<<uint(attempt), 30*time.Second)        // 1,2,4,8,16,32… 封顶 30s
-	return d + time.Duration(rand.Int63n(int64(d)/5+1))         // +0~20% 抖动
+	d := min(time.Second<<uint(attempt), 30*time.Second) // 1,2,4,8,16,32… 封顶 30s
+	return d + time.Duration(rand.Int63n(int64(d)/5+1))  // +0~20% 抖动
 }
 
 // sleepCtx 等待 d;期间 ctx 取消(ESC/退出)则提前返回 false,让重试循环立刻中止。

@@ -554,9 +554,8 @@ type shadowResultMsg struct {
 	err        error
 }
 
-// compactTriggerPct 实时会话压缩触发阈值(上下文用量占窗口的百分比)。与 agent 包轮内 auto-compact
-// 对齐到 70%:留 30% 给本轮输出;1M 窗口下也有充足 headroom。
-const compactTriggerPct = 70
+// 轮末会话压缩的触发阈值走 agent.CompactTriggerTokens(ctxWin) —— 与 agent 包轮内 auto-compact
+// 用同一个动态阈值(按窗口缩放 headroom),单一真相源,避免两处不一致。
 
 // shadowPoints 影子热压的触发档位(上下文用量百分比)。30 起步而非 20:keepTarget 也是 20%,
 // 在 20% 处 history < keepTarget 会被 RunCompression 拒(白跑);30% 起 history 才够压。
@@ -2966,12 +2965,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 显示区按字节预算自动裁剪 (chatLog.Append/Open 内部已调 trim),
 		// 这里无需额外动作 — 旧的 trimDisplayTurns 按"10 轮"裁的逻辑已被 chatLog 取代。
 
-		// 检查是否需要触发会话压缩：估算 token 数接近窗口的 compactTriggerPct(70%)时触发。
+		// 检查是否需要触发会话压缩:上下文用量达到 agent.CompactTriggerTokens(动态阈值)就压。
 		ctxWin := m.models.Pro.ContextWindow
 		if ctxWin <= 0 {
 			ctxWin = 65536
 		}
-		if m.session != nil && m.models.Pro.Model != "" && !m.compacting && m.lastPromptTokens() >= ctxWin*compactTriggerPct/100 {
+		if m.session != nil && m.models.Pro.Model != "" && !m.compacting && m.lastPromptTokens() >= agent.CompactTriggerTokens(ctxWin) {
 			m.compacting = true
 			m.compactingFG = true // 前台阻塞:同手动 /compact,footer 转 spinner + 期间挡输入。子 agent 走 runSubAgent 不经此处,天然例外。
 			// 前台阻塞 + spinner;排队输入推迟到 compressionResultMsg(压缩完成后)再发。
