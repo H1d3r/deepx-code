@@ -308,6 +308,13 @@ type model struct {
 	// 期间挡住普通消息提交,避免后台异步时用户又发消息、与压缩截断 history 抢同一段。自动压缩不置此位(仍后台)。
 	compactingFG bool
 
+	// compactingInTurn:agent 在**一轮进行中**做自动压缩期间为 true(CompactingMsg 置位,
+	// CompactedMsg / CompactFailedMsg 复位)。只改活动状态行的文案,**不参与输入拦截** ——
+	// 此刻必然 streaming==true,用户输入本来就走排队(见 Enter 分支),不需要也不该再加一道锁:
+	// 复位靠消息,而中断时在途消息会被 drainAndDiscard 丢掉,真加了锁就可能永久锁死输入框。
+	// 保险起见 StreamDone / StreamErr / interruptStream 也都会清它。
+	compactingInTurn bool
+
 	// 影子热压(shadow checkpoint):轮末上下文跨过 shadowPoints(30/45/60%)时,后台预算一份 checkpoint+cut
 	// 存盘(不改实时态、不重建 system prompt),供 >1h 冷重启时用,省冷 prefill 全量历史。
 	//   - shadowing:影子 Cmd 在飞时为 true,防并发影子。
@@ -508,6 +515,7 @@ func (m model) interruptStream() model {
 	}
 	m.streaming = false
 	m.thinking = false
+	m.compactingInTurn = false // 兜底:轮内压缩的复位消息可能被 drainAndDiscard 丢掉
 	m.status = "idle"
 	m.chatContent.Append(T("misc.interrupted"))
 	m.queuedInput = nil // 中止本轮 → 丢弃排队消息,不再自动续发
@@ -2354,6 +2362,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.streaming = false
 				m.thinking = false
+				m.compactingInTurn = false // 兜底:轮内压缩的复位消息可能被 drainAndDiscard 丢掉
 				m.status = "idle"
 				m.chatContent.Append(T("misc.interrupted"))
 				m.queuedInput = nil // 中止本轮 → 丢弃排队消息,不再自动续发
@@ -2766,25 +2775,99 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, agent.ListenToStream(m.streamCh)
 
-	case agent.CompactedMsg:
-		// 单个长 turn 内自动压缩:把新摘要存进 session(每轮由 BuildSystemPrompt 注入 system 尾部)。
-		// system 不入 history(会被 HistoryUpdateMsg 剥掉),不靠这条 session.summary 就丢上下文。
-		// history 的截断由 agent 随后发的 HistoryUpdateMsg 同步,这里只管摘要。
+	case agent.CompactingMsg:
 		if m.streamCh == nil {
 			return m, nil
 		}
-		m.summary = msg.Summary
-		if m.session != nil {
-			_ = m.session.SaveSummary(msg.Summary)
+		// 活动状态行切成「压缩中…」:RunCompression 期间 agent 一个 token 也不吐,
+		// 不切的话用户看到的是普通流式 spinner 挂着不动,只当卡死了。
+		m.compactingInTurn = true
+		return m, agent.ListenToStream(m.streamCh)
+
+	case agent.CompactFailedMsg:
+		if m.streamCh == nil {
+			return m, nil
 		}
-		// 前缀已变,旧缓存命中数会让 cache% 失真,清零(同 compressionResultMsg)。
+		m.compactingInTurn = false
+		// 自动压缩失败此前完全静默(agent 只是关掉本轮压缩、退回撞窗口保护),用户只看到
+		// 上下文一路涨上去,不知道中间试过一次(issue #201)。给一行,别让它无声消失。
+		m.chatContent.Open(kindSystem, "**自动压缩失败**:"+msg.Reason+"（本轮改用撞窗口保护）")
+		m.refreshViewport()
+		m.broadcast(web.Event{Kind: "notice", Text: "自动压缩失败:" + msg.Reason})
+		return m, agent.ListenToStream(m.streamCh)
+
+	case agent.ContextReclaimedMsg:
+		if m.streamCh == nil {
+			return m, nil
+		}
+		// 回收把上下文压下去了但状态栏读的 lastUsage 还是回收前的大数(要等下一次请求才更新,
+		// 本轮被 ESC 中断就永远不更新)。用 agent 捎来的估算把已失效的真实值降下来 —— 只降不升
+		// (估算口径偏低,不能顶替更大的真实值),清缓存命中数(前缀已变,旧 hit 会让 cache% 失真)。
+		// history 截断由随后的 HistoryUpdateMsg 同步,这里不碰。
 		if m.lastUsage != nil {
+			if msg.EstPromptTokens > 0 && msg.EstPromptTokens < m.lastUsage.PromptTokens {
+				m.lastUsage.PromptTokens = msg.EstPromptTokens
+			}
 			m.lastUsage.PromptCacheHitTokens = 0
 		}
-		if msg.Turns > 0 {
-			m.chatContent.Open(kindSystem, fmt.Sprintf("**已自动压缩会话历史（%d 轮→摘要）**", msg.Turns))
-			m.refreshViewport()
+		// 回收不改消息条数、也不产生摘要,不出声的话用户完全看不出上下文被动过(issue #201)。
+		note := fmt.Sprintf("已回收 %d 处旧工具输出（约 %s tok），需要时模型会重新调用取回",
+			msg.Count, formatTokenCount(msg.Tokens))
+		m.chatContent.Open(kindSystem, "**"+note+"**")
+		m.refreshViewport()
+		m.broadcast(web.Event{Kind: "notice", Text: note})
+		return m, agent.ListenToStream(m.streamCh)
+
+	case agent.CompactedMsg:
+		// 单个长 turn 内自动压缩。摘要 + 截断后的历史在同一条消息里,必须在这一个 Update 里
+		// 一起落地 —— 分两条发的时候,ESC 卡在中间会丢掉后一条,留下"摘要存了、历史没截断"的
+		// 半吊子状态,下一轮摘要和完整历史一起发出去,上下文反而更大(见 CompactedMsg 注释)。
+		if m.streamCh == nil {
+			return m, nil
 		}
+		m.compactingInTurn = false
+		m.summary = msg.Summary
+		// system prompt 不入存储 history(每轮由 BuildSystemPrompt 现建,含最新摘要)。
+		// History 为空只可能是异常情况 —— 那就只更新摘要,绝不把历史清空。
+		if len(msg.History) > 0 {
+			h := msg.History
+			if h[0].Role == "system" {
+				h = h[1:]
+			}
+			m.history = h
+		}
+		// 实时压缩落地 → 影子作废(与 compressionResultMsg 同一套收尾):实时态(摘要 + 截断历史)
+		// 已经比影子更新更全。不作废的话,盘上那份影子的切点是按压缩**前**的长历史算的,冷重启时
+		// applyStaleShadow 万一没被 cut<=len(history) 守卫拦住,就会拿过期 checkpoint 去截断
+		// 已经压过的历史。代数 +1 顺带丢弃期间在飞的影子结果;档位归零,等 history 重新长起来再积累。
+		m.compactGen++
+		m.shadowDonePct = 0
+		if m.session != nil {
+			m.session.ClearShadow()
+			_ = m.session.SaveSummary(msg.Summary)
+			_ = m.session.SaveGob("history.gob", m.history)
+		}
+		// 状态栏刷新:msg.EstPromptTokens 是 agent 算好的"压缩后下一次请求有多大",用它把已经失效的
+		// 真实值(算的是被压掉的那份历史)降下来,状态栏立刻反映缩小后的上下文 —— 不降的话要等下一次
+		// 请求返回 usage,本轮被 ESC 中断就永远不降,用户只看到百分比不动,以为没压成功(issue #201)。
+		// 只降不升:估算口径比真实值偏低(不含图片渲染追加、消息结构开销),不能拿它顶替更大的真实值。
+		// 前缀已变,旧缓存命中数会让 cache% 失真(甚至 >100%),一并清零(同 compressionResultMsg)。
+		if m.lastUsage != nil {
+			if msg.EstPromptTokens > 0 && msg.EstPromptTokens < m.lastUsage.PromptTokens {
+				m.lastUsage.PromptTokens = msg.EstPromptTokens
+			}
+			m.lastUsage.PromptCacheHitTokens = 0
+		}
+		// 压缩痕迹:轮内自动压缩此前只在 Turns>0 时往 chat 打一行、且完全不广播给 web,
+		// 于是自动压缩常常悄无声息 —— 用户不知道上下文被动过,只能靠猜(issue #201)。
+		// 与会话级压缩(compressionResultMsg)对齐:chat 一行 + web notice,恒发。
+		note := "已自动压缩会话历史（摘要已更新）"
+		if msg.Turns > 0 {
+			note = fmt.Sprintf("已自动压缩会话历史（%d 轮 → 摘要）", msg.Turns)
+		}
+		m.chatContent.Open(kindSystem, "**"+note+"**")
+		m.refreshViewport()
+		m.broadcast(web.Event{Kind: "notice", Text: note})
 		return m, agent.ListenToStream(m.streamCh)
 
 	case agent.PrefixSnapshotMsg:
@@ -2871,6 +2954,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "idle"
 		m.streaming = false
 		m.thinking = false
+		m.compactingInTurn = false // 兜底:轮内压缩的复位消息可能没送到(中断/错误)
 		m.activeTool = ""
 		m.streamCh = nil
 		m.cancelAgent = nil
@@ -2943,6 +3027,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "error"
 		m.streaming = false
 		m.thinking = false
+		m.compactingInTurn = false // 兜底:轮内压缩的复位消息可能没送到(中断/错误)
 		m.activeTool = ""
 		m.retryNotice = "" // 重试耗尽/不可重试,落到这里报错,清掉重试提示
 		m.streamCh = nil
@@ -3831,7 +3916,13 @@ func (m *model) startManualCompaction() tea.Cmd {
 // === Skill 辅助 ===
 
 // buildSkillCatalog 把所有可用 skill 拼成给 LLM 看的简短目录。
-// 格式:每行 "- <name> (<scope>): <description>"。空 loader / 空目录返回空串。
+// 格式:每行 "- <name>: <description>"。空 loader / 空目录返回空串。
+//
+// 刻意不带 scope:曾用 "- <name> (<scope>): <desc>",模型(尤其小模型)会把 " (builtin)" 这类
+// scope 括号连同 name 一起抄进 LoadSkill,导致精确匹配失败、加载报错(issue #201 附带发现的
+// karpathy-guidelines 加载失败)。scope(builtin/global/workspace)对模型选 skill 没有决策价值
+// —— 它只按 description 匹配任务 —— 去掉最省事也最不易出错。scope 仍保留在给**人**看的
+// /skills 列表里(那里不会被模型抄)。
 func buildSkillCatalog(l *skill.Loader) string {
 	if l == nil {
 		return ""
@@ -3846,7 +3937,7 @@ func buildSkillCatalog(l *skill.Loader) string {
 		if desc == "" {
 			desc = "(无 description)"
 		}
-		fmt.Fprintf(&sb, "- %s (%s): %s\n", m.Name, m.Scope, desc)
+		fmt.Fprintf(&sb, "- %s: %s\n", m.Name, desc)
 	}
 	return sb.String()
 }

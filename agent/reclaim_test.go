@@ -46,7 +46,7 @@ func TestReclaim_OldReplacedRecentKept(t *testing.T) {
 	convo := buildConvo(10, "Read", big)
 	before := len(convo)
 
-	if !reclaimToolOutputs(convo, 4096) { // 预算 = 4096*20% ≈ 819 token
+	if n, _ := reclaimToolOutputs(convo, 4096); n == 0 { // 预算 = 4096*20% ≈ 819 token
 		t.Fatal("应发生回收")
 	}
 	reclaimed, kept := countTool(convo)
@@ -63,7 +63,7 @@ func TestReclaim_OldReplacedRecentKept(t *testing.T) {
 
 func TestReclaim_TailProtected(t *testing.T) {
 	convo := buildConvo(reclaimMinTailToolMsgs+3, "Bash", strings.Repeat("x", 5000))
-	reclaimToolOutputs(convo, 1024) // 预算极小
+	_, _ = reclaimToolOutputs(convo, 1024) // 预算极小
 
 	seen := 0
 	for i := len(convo) - 1; i >= 0; i-- {
@@ -79,7 +79,7 @@ func TestReclaim_TailProtected(t *testing.T) {
 
 func TestReclaim_ReferenceHasNameAndPath(t *testing.T) {
 	convo := buildConvo(8, "Read", strings.Repeat("y", 8000))
-	reclaimToolOutputs(convo, 2048)
+	_, _ = reclaimToolOutputs(convo, 2048)
 
 	found := false
 	for _, m := range convo {
@@ -98,10 +98,10 @@ func TestReclaim_ReferenceHasNameAndPath(t *testing.T) {
 
 func TestReclaim_Idempotent(t *testing.T) {
 	convo := buildConvo(8, "Read", strings.Repeat("z", 6000))
-	if !reclaimToolOutputs(convo, 2048) {
+	if n, _ := reclaimToolOutputs(convo, 2048); n == 0 {
 		t.Fatal("首次应有改动")
 	}
-	if reclaimToolOutputs(convo, 2048) {
+	if n, _ := reclaimToolOutputs(convo, 2048); n > 0 {
 		t.Fatal("再次 reclaim 不应有新改动(幂等)")
 	}
 }
@@ -116,7 +116,7 @@ func TestReclaim_NonToolUntouched(t *testing.T) {
 		{Role: "assistant", Content: asstBig},
 	}
 	before := len(convo)
-	reclaimToolOutputs(convo, 1024)
+	_, _ = reclaimToolOutputs(convo, 1024)
 	if convo[1].Content != userBig {
 		t.Fatal("user 消息不应被改")
 	}
@@ -130,7 +130,7 @@ func TestReclaim_NonToolUntouched(t *testing.T) {
 
 func TestReclaim_UnderBudgetNoChange(t *testing.T) {
 	convo := buildConvo(6, "Read", "tiny") // 工具输出很小
-	if reclaimToolOutputs(convo, 1_000_000) {
+	if n, _ := reclaimToolOutputs(convo, 1_000_000); n > 0 {
 		t.Fatal("预算充足时不应回收")
 	}
 }
@@ -150,7 +150,7 @@ func TestReclaim_SmallOldOutputsKept(t *testing.T) {
 		convo = append(convo, asstCall(id, "Read", fmt.Sprintf(`{"path":"f%d.go"}`, k)))
 		convo = append(convo, toolMsg(id, "Read", big))
 	}
-	reclaimToolOutputs(convo, 2048) // keepBudget≈409;5 条大 Read 远超,更旧的进入回收判定
+	_, _ = reclaimToolOutputs(convo, 2048) // keepBudget≈409;5 条大 Read 远超,更旧的进入回收判定
 
 	reclaimedRead := false
 	for _, m := range convo {
@@ -186,7 +186,7 @@ func TestReclaim_BelowTotalFloorNoChange(t *testing.T) {
 		convo = append(convo, toolMsg(id, "Read", huge))
 	}
 
-	if reclaimToolOutputs(convo, ctxWin) {
+	if n, _ := reclaimToolOutputs(convo, ctxWin); n > 0 {
 		t.Fatal("总回收量低于聚合下限时不应回收(护缓存)")
 	}
 	for _, m := range convo {
@@ -205,7 +205,7 @@ func TestReclaim_PairingPreserved(t *testing.T) {
 			ids[i] = m.ToolCallID
 		}
 	}
-	reclaimToolOutputs(convo, 2048)
+	_, _ = reclaimToolOutputs(convo, 2048)
 	for i, m := range convo {
 		if m.Role == "tool" {
 			if m.ToolCallID != ids[i] {

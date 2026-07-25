@@ -108,12 +108,51 @@ type HistoryUpdateMsg struct {
 	History []ChatMessage
 }
 
-// CompactedMsg 在「单个长 turn 内」自动压缩后发给 UI:摘要存在 session(每轮注入 system 尾部),
-// 而 system 不入 history(HistoryUpdateMsg 会剥掉)——必须用这条把新摘要带出来,否则下轮上下文丢失。
-// history 截断由随后的 HistoryUpdateMsg 同步。Turns = 本次被压掉的 user 轮数,仅供 UI 提示。
+// CompactedMsg 在「单个长 turn 内」自动压缩后发给 UI。
+//
+// 摘要 + 截断后的历史**必须装在同一条消息里**:两者曾经分两条发(CompactedMsg 带摘要、随后的
+// HistoryUpdateMsg 带截断历史),而 UI 是一条一条消费的,用户若恰好在两条之间按 ESC,中断逻辑会
+// drainAndDiscard 掉后一条 —— 结果是「摘要存下了、历史没截断」,下一轮把摘要和完整历史一起发出去,
+// 内容重复、上下文反而比压缩前更大(issue #201 里"莫名其妙涨到 87%"的机制之一)。
+// 装成一条后要么全生效、要么全不生效:中断时 agent 直接 return,它压好的 convo 一并丢弃,
+// UI 保留完整历史,下一轮重来,只是白压一次 —— 状态始终自洽。
 type CompactedMsg struct {
 	Summary string
 	Turns   int
+	// History = 压缩后的完整 convo(含首条 system)。UI 用它替换本地副本,剥掉 system 后存盘。
+	History []ChatMessage
+	// EstPromptTokens = 压缩后「下一次请求」的本地估算(system + tools + 保留的历史)。
+	// TUI 状态栏显示的是上一次请求的真实 prompt_tokens,压缩截断历史后它仍是压缩前的大数,
+	// 要等下一次请求才更新 —— 本轮若被 ESC 中断就永远不更新,看起来像"压了没动"(issue #201)。
+	// 由 agent 捎出来而不是让 TUI 自己估:CompactedMsg 到达时 TUI 的 history 还没被截断(截断靠
+	// 随后的 HistoryUpdateMsg),自己估只会估出压缩前的数;而这个值 agent 防死循环时本就要算。
+	EstPromptTokens int
+}
+
+// CompactingMsg 轮内自动压缩「开始」时发给 UI:RunCompression 是一次同步的 LLM 调用,
+// 最长会卡 compactionTimeout(2 分钟),期间 agent 停在那儿、一个 token 也不吐。不发这条的话
+// 界面上只有普通的流式 spinner,用户看不出在压缩,只觉得卡死了(issue #201)。
+// 收到后 UI 把活动状态行切成「压缩中…」,由 CompactedMsg(成功)或 CompactFailedMsg(失败)复位。
+type CompactingMsg struct{}
+
+// CompactFailedMsg 轮内自动压缩失败(摘要请求超时/被拒、历史压不动)。
+// 失败后本轮不再尝试压缩,退回「撞窗口优雅报错」保护 —— 这件事此前完全静默,
+// 用户只看到上下文一路涨上去却不知道中间试过一次(issue #201)。
+type CompactFailedMsg struct {
+	Reason string
+}
+
+// ContextReclaimedMsg 工具输出回收(reclaim)落地后发给 UI。reclaim 是长任务(user 轮≤2、压缩
+// 结构上不触发)里**唯一**在减负的一层,可它此前只发 HistoryUpdateMsg —— 不刷状态栏、不留痕迹、
+// 不广播,把上下文从 100% 压到 20% 用户却什么都看不到,以为"没压成功"(issue #201)。
+// 这条把 reclaim 对齐到自动压缩的待遇:痕迹 + web 提示 + 状态栏刷新。
+type ContextReclaimedMsg struct {
+	Count  int // 被回收的工具结果条数
+	Tokens int // 净回收掉的 token(原文 - 占位标记)
+	// EstPromptTokens = 回收后「下一次请求」的本地估算。状态栏读的是上一次请求的真实 prompt_tokens,
+	// 回收后它仍是回收前的大数,要等下一次请求才更新 —— 本轮被 ESC 中断就永远不更新。用它把已失效的
+	// 真实值降下来(TUI 侧只降不升,见 CompactedMsg.EstPromptTokens 同款逻辑)。
+	EstPromptTokens int
 }
 
 // VisionUnsupportedMsg:本以为支持视觉的模型,实际发图被端点拒(如 404 "no image input")。
@@ -579,6 +618,9 @@ func StartStream(
 		ch <- ModelSwitchMsg{Role: role, ModelID: currentEntry.Model}
 
 		toolSpecs := buildToolSpecs(mode)
+		// 工具定义 JSON 的 token 数,本轮不变(toolSpecs 只在这里建一次)。算一次复用:reclaim
+		// 给 UI 的估算要含它,口径才与真实 prompt_tokens / 压缩的 EstimatePromptTokens 对齐。
+		toolSpecsTokens := EstTokens(MarshalToolSpecs(toolSpecs))
 
 		// 发出本轮"实际发送"的前缀快照(system 文本 + tool specs JSON),供 TUI 持久化:
 		// 重启变化检测 + 缓存友好压缩复刻旧前缀。tool specs 随 mode/role 变,故必须存实际值。
@@ -625,7 +667,10 @@ func StartStream(
 					curEst += MsgTokens(convo[i]) // 实时估算(与 clampMaxTokens 同口径);可后续复用其结果省一遍
 				}
 				if max(lastPromptTokens, curEst) >= ctxWin*compactTriggerPct/100 {
-					if reclaimToolOutputs(convo, ctxWin) {
+					if n, freed := reclaimToolOutputs(convo, ctxWin); n > 0 {
+						// 回收后 prompt 估算 = system+messages(curEst 已含,减去净回收量)+ tools schema。
+						estAfter := curEst - freed + toolSpecsTokens
+						ch <- ContextReclaimedMsg{Count: n, Tokens: freed, EstPromptTokens: estAfter}
 						ch <- HistoryUpdateMsg{History: convo}
 					}
 				}
@@ -638,21 +683,26 @@ func StartStream(
 				lastPromptTokens >= ctxWin*compactTriggerPct/100 &&
 				len(convo) > 0 && convo[0].Role == "system" {
 				hist := convo[1:]
+				ch <- CompactingMsg{} // 先亮状态行:下面这行最长会卡 2 分钟,期间不吐任何 token
 				sum, cutIdx, turns, cerr := RunCompression(convo[0].Content, MarshalToolSpecs(toolSpecs), hist, currentEntry, ctxWin)
 				if cerr != nil {
 					inLoopCompactOff = true // 压不动(历史太短/摘要失败)→ 本轮不再尝试,退回撞窗口报错
+					ch <- CompactFailedMsg{Reason: cerr.Error()}
 				} else {
 					summary = sum
 					kept := append([]ChatMessage(nil), hist[cutIdx:]...)
 					convo = append([]ChatMessage{{Role: "system", Content: BuildSystemPrompt(workspace, skillCatalog, summary)}}, kept...)
 					lastPromptTokens = 0 // 压完归零,等下一轮真实 usage 再判
+					// 压缩后 prompt 的本地估算:一份两用 —— ① 防死循环判断(下面);② 随 CompactedMsg
+					// 带给 TUI 刷新状态栏(见 CompactedMsg.EstPromptTokens 注释)。
+					estAfter := EstimatePromptTokens(workspace, skillCatalog, summary, kept)
 					// 防死循环:若压缩后历史仍超阈值(最近 5 轮本身就超窗口,RunCompression 切点缩不动),
 					// 再压也无效 → 本轮关掉循环内压缩,退回撞窗口优雅报错,避免反复压缩刷请求。
-					if EstimatePromptTokens(workspace, skillCatalog, summary, kept) >= ctxWin*compactTriggerPct/100 {
+					if estAfter >= ctxWin*compactTriggerPct/100 {
 						inLoopCompactOff = true
 					}
-					ch <- CompactedMsg{Summary: summary, Turns: turns}
-					ch <- HistoryUpdateMsg{History: convo}
+					// 摘要 + 截断历史 + 新量级一条送达,原子生效(见 CompactedMsg 注释)。
+					ch <- CompactedMsg{Summary: summary, Turns: turns, History: convo, EstPromptTokens: estAfter}
 				}
 			}
 			// 按本轮模型支不支持视觉,即时把带图消息渲染成 base64 或 路径+OCR(见 renderConvoImages)。
@@ -1714,12 +1764,14 @@ const (
 	reclaimMarkerPrefix = "[已回收] "
 )
 
-// reclaimToolOutputs 就地把"较旧的工具结果内容"换成引用标记以回收上下文,返回是否发生改动。
+// reclaimToolOutputs 就地把"较旧的工具结果内容"换成引用标记以回收上下文,
+// 返回(被回收条数, 净回收 token = 原文-占位);未发生改动返回 (0, 0)。计数供 UI 提示 ——
+// 不出声的话用户看不出上下文被动过,只当"没压成功"(issue #201)。
 // 只改 Role=="tool" 消息的 Content;user/assistant 消息、工具调用骨架、ToolCallID 配对一律不动
 // (故 sanitizeToolPairs 安全、发给 API 的配对完整)。
 // 保护:最近 reclaimMinTailToolMsgs 条工具结果 + 最近 reclaimKeepPct 预算内的工具输出,留全。幂等。
 // 聚合下限:整趟能回收的总量不足 reclaimMinTotalPct 窗口就整趟不动 —— 避免为一点点收益击穿前缀缓存。
-func reclaimToolOutputs(convo []ChatMessage, ctxWin int) bool {
+func reclaimToolOutputs(convo []ChatMessage, ctxWin int) (count, freed int) {
 	if ctxWin <= 0 {
 		ctxWin = 65536
 	}
@@ -1768,14 +1820,19 @@ func reclaimToolOutputs(convo []ChatMessage, ctxWin int) bool {
 
 	// 聚合下限:总回收量不够就整趟不动,不为小收益击穿缓存。
 	if reclaimable < ctxWin*reclaimMinTotalPct/100 {
-		return false
+		return 0, 0
 	}
 
-	// 第二趟:落地回收。
+	// 第二趟:落地回收。净回收量 = 原文 - 占位标记(标记本身也占几十 token),按净值报给 UI。
+	freed = reclaimable
 	for _, i := range victims {
 		convo[i].Content = toolOutputReference(convo[i].Name, callPath[convo[i].ToolCallID])
+		freed -= MsgTokens(convo[i])
 	}
-	return len(victims) > 0
+	if freed < 0 {
+		freed = 0
+	}
+	return len(victims), freed
 }
 
 // toolOutputReference 生成被回收工具结果的引用标记:带工具名与 path(有则),

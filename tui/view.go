@@ -508,8 +508,9 @@ func (m model) queuedDisplayLines(width int) []string {
 //   - 空闲:一个暗色 "● 就绪",和运行态形成明显对比。
 func (m model) statusFooterLine(_ int) string {
 	dim := lipgloss.NewStyle().Foreground(subtleColor).Render
-	// 压缩前台期间(手动/自动):转 spinner +「压缩中…」;输入不丢,排队待压缩后自动发。
-	if m.compactingFG {
+	// 压缩期间(手动 /compact、轮末自动、以及 agent 在一轮进行中压):转 spinner +「压缩中…」;
+	// 输入不丢,排队待压缩后自动发。轮内压缩最长会卡 2 分钟且不吐 token,没有这行用户只当卡死了。
+	if m.compactingFG || m.compactingInTurn {
 		head := m.spinner.View()
 		word := lipgloss.NewStyle().Foreground(statusColor("thinking")).Bold(true).Render("压缩中…")
 		hint := " · 消息将在压缩后自动发出"

@@ -63,7 +63,9 @@ func handleWorkflowTool(
 		}
 		var sb strings.Builder
 		for _, m := range metas {
-			fmt.Fprintf(&sb, "- %s (%s):%s\n", m.Name, m.Scope, m.Description)
+			// 不带 scope 括号:模型会把 " (builtin)" 连同 name 一起抄进调用参数,导致匹配失败
+			// (同 buildSkillCatalog 的处理)。scope 对模型选 workflow 无决策价值。
+			fmt.Fprintf(&sb, "- %s: %s\n", m.Name, m.Description)
 		}
 		return tools.ToolResult{Output: strings.TrimRight(sb.String(), "\n"), Success: true}
 
