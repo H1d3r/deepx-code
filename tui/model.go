@@ -544,6 +544,12 @@ type compressionResultMsg struct {
 	compressedTurns int // 本次压缩的 user 轮数
 	err             error
 	manual          bool // true = /compact 手动触发:失败要给用户反馈,而非像后台触发那样静默
+
+	// 手动 /compact 压不动(轮数不足)时的 reclaim 兜底结果(见 compactCmd)。reclaimedCount>0 表示
+	// 压缩虽跳过,但改回收了工具输出:此时用 reclaimedHistory 替换 history,并提示回收量而非报"跳过"。
+	reclaimedCount   int
+	reclaimedFreed   int
+	reclaimedHistory []agent.ChatMessage
 }
 
 // shadowResultMsg 影子热压完成后的结果。只存盘、不改实时态;gen 用于丢弃过期结果。
@@ -3080,6 +3086,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.compacting = false
 		m.compactingFG = false // 解除前台阻塞(成功/失败都解,spinner 随之停、输入恢复)
 		if msg.err != nil {
+			// 手动 /compact 压不动、但 reclaim 兜底减了负:用回收后的 history 替换,提示回收量而非报"跳过"。
+			// 过期保护(同正常压缩路径的 cutIdx 校验):reclaim 不改消息条数,回收后长度应与触发时的
+			// m.history 相等;若期间 history 被别的路径(轮末压缩/新消息)改动到长度不符,说明这个
+			// snapshot 已过期,丢弃它、退回普通"跳过"提示,避免用旧快照覆盖更新的 history。
+			if msg.reclaimedCount > 0 && len(msg.reclaimedHistory) == len(m.history) {
+				m.history = msg.reclaimedHistory
+				est := m.estimatePromptTokens()
+				if m.lastUsage != nil && est > 0 && est < m.lastUsage.PromptTokens {
+					m.lastUsage.PromptTokens = est   // 回收后上下文变小,把过期的真实值降下来
+					m.lastUsage.PromptCacheHitTokens = 0
+				}
+				if m.session != nil {
+					_ = m.session.SaveGob("history.gob", m.history)
+				}
+				note := fmt.Sprintf("轮数不足无法压缩,已改回收 %d 处旧工具输出（约 %s tok）",
+					msg.reclaimedCount, formatTokenCount(msg.reclaimedFreed))
+				m.chatContent.Open(kindSystem, "**"+note+"**")
+				m.refreshViewport()
+				m.broadcast(web.Event{Kind: "notice", Text: note})
+				if next, qcmd, ok := m.popQueuedInput(); ok {
+					return next, qcmd
+				}
+				return m, nil
+			}
 			// 后台自动触发(70%/重启/空闲)失败静默 —— 不往聊天区打扰用户,下次触发会重试。
 			// 但 /compact 是用户主动发起的,压不动(历史太小/轮数不足)要明确告知,否则像没反应。
 			if msg.manual {
@@ -3888,6 +3918,15 @@ func (m model) compactCmd(manual bool) tea.Cmd {
 	entry := m.entryForModel(lastModel)
 	return func() tea.Msg {
 		summary, cutIdx, turns, err := agent.RunCompression(lastSys, lastTools, snapshot, entry, ctxWin)
+		// 手动 /compact 压不动(轮数不足/历史太短)→ 退而回收工具输出,别让用户白按一次。
+		// reclaim 就地改 snapshot(不改条数),有回收就把结果带回,由 compressionResultMsg 应用。
+		// 只在 manual 时兜底:后台自动触发的压缩失败,轮内 reclaim 自会在流式循环里处理。
+		if err != nil && manual {
+			if n, freed := agent.ReclaimToolOutputs(snapshot, ctxWin); n > 0 {
+				return compressionResultMsg{err: err, manual: manual,
+					reclaimedCount: n, reclaimedFreed: freed, reclaimedHistory: snapshot}
+			}
+		}
 		return compressionResultMsg{summary: summary, cutIdx: cutIdx, compressedTurns: turns, err: err, manual: manual}
 	}
 }
