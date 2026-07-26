@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -16,6 +17,12 @@ import (
 //
 // 本文件封装与 TUI 无关的压缩纯逻辑:token 估算 + RunCompression。
 // bubbletea 胶水(触发时机、tea.Cmd 包装、消息处理、读 model/session)仍在 tui 包,调用这里的导出函数。
+
+// ErrCompactTooFewTurns:压缩因「user 轮数不足」被拒。这是**结构性不可恢复**失败 —— 轮内 for 循环
+// 是单个 user turn,期间 user 轮数恒定,冷却后重试也永远失败,且这个检查在发 LLM 请求前就本地秒拒。
+// agent 据此区别对待:轮数不足永久关本轮压缩(而非冷却重试),避免每圈闪「压缩中…/失败」刷屏
+// (issue #201)。只有瞬时失败(超时/网络)才值得冷却重试。
+var ErrCompactTooFewTurns = errors.New("user 轮数不足,无需压缩")
 
 // keepRecentTurns 是压缩时至少保留的最近 user 轮数下限(与 20% 预算取较大者)。
 // 2 轮能覆盖"最近指代",同时大幅减少过度保留。可按需调整。
@@ -201,7 +208,7 @@ func RunCompression(lastSystemPrompt, lastToolSpecsJSON string, history []ChatMe
 		}
 	}
 	if totalUsers <= 2 {
-		return "", 0, 0, fmt.Errorf("user 轮数不足,无需压缩")
+		return "", 0, 0, ErrCompactTooFewTurns
 	}
 
 	// 保留量 = max(20% 预算, 最近 keepRecentTurns 轮),取保留更多者(切点更靠前 = 下标更小)。

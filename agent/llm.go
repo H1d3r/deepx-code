@@ -44,6 +44,11 @@ const (
 	compactHeadroomFloor = 30_000  // headroom 绝对下限:极小窗口也留够单轮暴涨缓冲
 	compactHeadroomCap   = 180_000 // headroom 绝对上限:大窗口不必按比例留那么多,省得过早压
 
+	// compactRetryCooldown:轮内压缩**瞬时失败**(超时/网络)后,隔这么多圈工具往返再重试。
+	// 只作用于瞬时失败(轮数不足走永久关,不冷却),故取 4 即可:够稀释反复发压缩请求 / 反复等
+	// 10 分钟超时,又能在长任务里较快恢复压缩。冷却期间 reclaim 不受影响、每圈照常兜底。
+	compactRetryCooldown = 4
+
 	// maxAPIRetries:streamOnce 在「进入流式之前」失败(网络错 / 429 限流 / 5xx 服务端错误)时的最大重试次数。
 	// 只重试这类瞬时错误,且只在还没吐任何 token 给 UI 时重试(进流式后的中途断不在此列,重试会重复吐字)。
 	// 退避 = 指数 + 抖动,429 优先听 Retry-After;每次重试前发 RetryNoticeMsg 让状态行显示「重试 N/10」(issue #147)。
@@ -416,6 +421,11 @@ func CallOnce(ctx context.Context, apiKey, baseURL, modelID string, convo []Chat
 // 用于缓存友好的压缩:摘要请求复刻会话的 [system][tools][history] 前缀,只在末尾追加压缩指令,
 // 从而命中已缓存的前缀(tools 必须和被缓存的那次逐字节一致才命中,故由调用方传入旧 specs)。
 func CallWithTools(ctx context.Context, apiKey, baseURL, modelID string, convo []ChatMessage, toolSpecs []tools.OpenAIToolSpec, maxTokens int) (string, error) {
+	// 与主流式路径(streamAttempt)同款的发送前修复 + 消毒:压缩请求复刻的是历史前缀,
+	// 前缀里若有坏 arguments / 坏配对,摘要请求会被严格后端(vLLM)400 → 压缩永远失败、
+	// 上下文只涨不降(issue #201)。且主路径实际发送(并被缓存)的前缀是修复后的形态,
+	// 这里做同样的变换,前缀才逐字节一致、缓存才命中。正常历史下两者都是 no-op。
+	convo = sanitizeToolPairs(repairToolCallArgs(convo))
 	body, err := json.Marshal(chatRequest{
 		Model:     modelID,
 		MaxTokens: maxTokens,
@@ -647,15 +657,24 @@ func StartStream(
 		// 任一轮有工具成功就归零。无绝对轮数上限(见 maxNoProgressRounds 注释),跑到模型自己停为止。
 		noProgressRounds := 0
 
-		// 循环内 auto-compact 状态:lastPromptTokens = 上一轮真实 prompt tokens(判是否该压缩);
-		// inLoopCompactOff = 本轮压缩失败后置位,退回"撞窗口优雅报错",避免反复压缩刷请求。
+		// 循环内 auto-compact 状态:
+		//   lastPromptTokens = 上一轮真实 prompt tokens(判是否该压缩);
+		//   inLoopCompactOff = 压缩「成功但仍超阈值」的死循环保护,永久关本轮压缩(再压也切不动);
+		//   compactCooldown  = 压缩「失败」后的冷却圈数(>0 时跳过压缩,每圈递减)。失败不再永久放弃
+		//     整轮 —— 瞬时失败(超时/网络)冷却后可能成功,结构性失败(轮数不足)冷却期间 history
+		//     继续长大也可能变得可压。冷却而非永久,既给重试机会又不会每圈刷压缩请求(issue #201:
+		//     一次压缩超时把后面几十圈工具调用全程拖成不压缩、只能一路涨到 87%)。
 		lastPromptTokens := 0
 		inLoopCompactOff := false
+		compactCooldown := 0
 
 		for {
 			// 检查 context 是否取消(ESC/退出),提前退出不卡后台
 			if ctx.Err() != nil {
 				return
+			}
+			if compactCooldown > 0 {
+				compactCooldown-- // 压缩失败后的冷却:每圈递减,到 0 才允许再压
 			}
 
 			// 工具输出回收(reclaim,issue #201):比 LLM 摘要便宜的第一层,且不受 inLoopCompactOff 影响。
@@ -682,14 +701,20 @@ func StartStream(
 			// 循环内 auto-compact:上一轮 prompt 接近上下文窗口就先压缩历史腾空间再继续(不熔断停)。
 			// 对标 Claude Code:压缩 convo[1:] 成摘要、重建 [system(新摘要)]+尾部,新摘要经 CompactedMsg
 			// 回传 TUI 存 session(否则被剥的 system 摘要会丢失),history 截断经 HistoryUpdateMsg 同步。
-			if ctxWin := currentEntry.ContextWindow; !inLoopCompactOff && ctxWin > 0 &&
+			if ctxWin := currentEntry.ContextWindow; !inLoopCompactOff && compactCooldown == 0 && ctxWin > 0 &&
 				lastPromptTokens >= CompactTriggerTokens(ctxWin) &&
 				len(convo) > 0 && convo[0].Role == "system" {
 				hist := convo[1:]
 				ch <- CompactingMsg{} // 先亮状态行:下面这行最长会卡 10 分钟,期间不吐任何 token
 				sum, cutIdx, turns, cerr := RunCompression(convo[0].Content, MarshalToolSpecs(toolSpecs), hist, currentEntry, ctxWin)
 				if cerr != nil {
-					inLoopCompactOff = true // 压不动(历史太短/摘要失败)→ 本轮不再尝试,退回撞窗口报错
+					// 按失败类型分流:轮数不足是本轮结构性不可恢复(user 轮数恒定,重试注定再失败)→ 永久关,
+					// 不刷屏;瞬时失败(超时/网络)→ 冷却 compactRetryCooldown 圈后重试(见状态变量注释)。
+					if errors.Is(cerr, ErrCompactTooFewTurns) {
+						inLoopCompactOff = true
+					} else {
+						compactCooldown = compactRetryCooldown
+					}
 					ch <- CompactFailedMsg{Reason: cerr.Error()}
 				} else {
 					summary = sum
@@ -1369,9 +1394,11 @@ func streamAttempt(
 		StreamOptions: &streamOptions{
 			IncludeUsage: true,
 		},
-		// 发送前消毒:剔除孤儿 tool 消息 / 剥掉无响应的 tool_calls,避免 API 400(见 issue #94),
-		// 并自愈已被写进历史的坏配对(下次请求即恢复)。正常对话是 no-op。
-		Messages: sanitizeToolPairs(convo),
+		// 发送前消毒 + 修复:剔除孤儿 tool 消息 / 剥掉无响应的 tool_calls,避免 API 400(见 issue #94);
+		// 修复历史里非法的 tool_calls arguments(vLLM 等严格后端会 json.loads 每条 arguments,
+		// 坏一条整个请求 400,见 issue #201)—— 救活已把坏 arguments 存盘的旧会话。
+		// 两者都是确定性纯函数、copy-on-write:正常对话是 no-op,不动前缀、不影响缓存。
+		Messages: sanitizeToolPairs(repairToolCallArgs(convo)),
 		Tools:    toolSpecs,
 		// thinking 和 reasoning_effort 是两个独立顶层字段。各自 omitempty,
 		// 用户设了就发、没设就不发,白名单内的值才透传(防 yaml 笔误)。
@@ -1722,6 +1749,10 @@ func rewriteToolCallArgsForHistory(tcs []ToolCall) []ToolCall {
 	out := make([]ToolCall, len(tcs))
 	for i, tc := range tcs {
 		out[i] = tc
+		// 入历史前把 arguments 修成合法 JSON(空→{}、截断补全、垃圾兜底包裹,见 args_repair.go):
+		// 历史里的坏 arguments 会让 vLLM 等严格后端对后续所有请求 400,会话不可恢复(issue #201)。
+		// 执行仍用原始 toolCalls,不受影响。
+		out[i].Function.Arguments = repairArgsJSON(out[i].Function.Arguments)
 		if tc.Function.Name == "Write" {
 			out[i].Function.Arguments = elideWriteContent(out[i].Function.Arguments)
 		}
@@ -1784,6 +1815,13 @@ const (
 	// reclaimMarkerPrefix:被回收工具结果的 Content 前缀,兼作幂等判据(再次 reclaim 时跳过、不重复计数)。
 	reclaimMarkerPrefix = "[已回收] "
 )
+
+// ReclaimToolOutputs 是 reclaimToolOutputs 的导出包装,供 tui 在手动 /compact 压不动(轮数不足)时
+// 兜底调用:就地回收 history 里较旧的工具输出,返回(条数, 净回收 token)。history 会被就地修改。
+// 手动 /compact 走轮末/空闲态,不经 agent 流式循环,拿不到内部的 reclaim,故需这个入口(issue #201)。
+func ReclaimToolOutputs(history []ChatMessage, ctxWin int) (count, freed int) {
+	return reclaimToolOutputs(history, ctxWin)
+}
 
 // reclaimToolOutputs 就地把"较旧的工具结果内容"换成引用标记以回收上下文,
 // 返回(被回收条数, 净回收 token = 原文-占位);未发生改动返回 (0, 0)。计数供 UI 提示 ——
