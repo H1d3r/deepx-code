@@ -28,6 +28,7 @@ import (
 	"charm.land/glamour/v2"
 	"charm.land/glamour/v2/styles"
 	"charm.land/lipgloss/v2"
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -208,6 +209,10 @@ type model struct {
 	// UpdatePlanStatus 通过 TaskStatusMsg 增量更新。每次新用户消息发起前清空。
 	plan     *planState
 	planKind string // 当前 plan 来源:"todo"(Todo)/ "createplan"(CreatePlan),右栏分段显示用
+
+	// mousePassthrough 为 true 时,在 View() 中关掉鼠标捕获(MouseModeNone),
+	// 让终端原生处理右键粘贴与文字选择。用 F2 切换。
+	mousePassthrough bool
 
 	// 鼠标 chat 矩形选区。selecting=true 表示左键在 chat 区按下后还没松开;
 	// selAnchor / selEnd 是选区两端 (cellPos: 显示列 + wrapped 行号)。
@@ -1460,6 +1465,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Button != tea.MouseLeft {
+			// 右键点击输入区 → 读取剪贴板文本并粘贴
+			if msg.Button == tea.MouseRight {
+				leftW, vpH := m.layout()
+				inInput := msg.Y >= vpH && msg.Y < m.height && msg.X >= 0 && msg.X < leftW
+				if inInput {
+					if text, err := clipboard.ReadAll(); err == nil && text != "" {
+						m.input.InsertString(text)
+					}
+				}
+			}
 			return m, nil
 		}
 		leftW, vpH := m.layout()
@@ -2476,6 +2491,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+b":
 			// 显示/隐藏右侧状态栏(chat 铺满整宽);记忆到 meta。
 			m.toggleStatusPanel()
+			return m, nil
+		case "f2":
+			// 切换鼠标穿透模式:关掉 MouseMode,让终端原生处理右键粘贴和文字选择。
+			m.mousePassthrough = !m.mousePassthrough
+			hint := "鼠标"
+			if m.mousePassthrough {
+				hint += "穿透已开启(终端原生选择/粘贴)"
+			} else {
+				hint += "捕获已恢复(deepx 选区/复制)"
+			}
+			m.appendChat("System", hint)
 			return m, nil
 		case "ctrl+v":
 			// 剪贴板有图就落盘并插入到输入框;没图则下落到 textinput 走文本粘贴。
