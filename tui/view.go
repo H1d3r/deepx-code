@@ -531,13 +531,14 @@ func (m model) statusFooterLine(_ int) string {
 				s += dim(" · " + strconv.Itoa(m.turnToolCalls) + " " + T("done.tools"))
 			}
 			if m.mousePassthrough {
-				s += dim(" · 🖱穿透")
+				s += dim(" · " + T("mouse.passthrough.badge"))
 			}
 			return s
 		}
-		// 还没跑过任何一轮:检查鼠标穿透指示。
+		// 还没跑过任何一轮:活动行留空(见上),但穿透开着时要给个可见提示 ——
+		// 这时 deepx 的选区/滚轮都不响应,不说明用户会以为界面坏了。
 		if m.mousePassthrough {
-			return dim("🖱 鼠标穿透已开启(F2切换)")
+			return dim(T("mouse.passthrough.badge"))
 		}
 		return ""
 	}
@@ -555,7 +556,7 @@ func (m model) statusFooterLine(_ int) string {
 		left += dim(" · ") + lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true).Render("⟳ "+m.retryNotice)
 	}
 	if m.mousePassthrough {
-		left += dim(" · 🖱穿透")
+		left += dim(" · " + T("mouse.passthrough.badge"))
 	}
 	// 不再右贴 "Esc 中断" —— 输入框 placeholder(misc.input_placeholder)已含,避免重复。
 	return left

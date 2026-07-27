@@ -28,7 +28,6 @@ import (
 	"charm.land/glamour/v2"
 	"charm.land/glamour/v2/styles"
 	"charm.land/lipgloss/v2"
-	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -716,8 +715,9 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 		mode:            agent.AgentMode_Auto,
 		workingMode:     agent.WorkingModeDefault, // 默认 kp;下方从 session 恢复
 		status:          "idle",
-		hideStatusPanel: metaGet().HideStatus,   // 记忆上次的状态栏显隐
-		showThinking:    metaGet().ShowThinking, // 记忆上次的思考显隐
+		hideStatusPanel:  metaGet().HideStatus,       // 记忆上次的状态栏显隐
+		showThinking:     metaGet().ShowThinking,     // 记忆上次的思考显隐
+		mousePassthrough: metaGet().MousePassthrough, // 记忆上次的鼠标穿透选择(F2)
 		spinner:         sp,
 		workspace:       wd,
 		setupInput:      si,
@@ -1465,14 +1465,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Button != tea.MouseLeft {
-			// 右键点击输入区 → 读取剪贴板文本并粘贴
-			if msg.Button == tea.MouseRight {
-				leftW, vpH := m.layout()
-				inInput := msg.Y >= vpH && msg.Y < m.height && msg.X >= 0 && msg.X < leftW
-				if inInput {
-					if text, err := clipboard.ReadAll(); err == nil && text != "" {
-						m.input.InsertString(text)
-					}
+			// 右键点击输入区 → 读剪贴板文本粘贴(issue #211)。走 insertPastedText 与 tea.PasteMsg
+			// 同一条管线:CRLF 归一 + 超长走占位符,少一样都会出问题(见该函数注释)。
+			if msg.Button == tea.MouseRight && m.inInputArea(msg.X, msg.Y) {
+				if text, err := readClipboardText(); err == nil && text != "" {
+					return m, m.insertPastedText(text)
 				}
 			}
 			return m, nil
@@ -1492,11 +1489,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 选区只认内容列 [chatLeft, leftW),分隔线列按 X 与上面互斥。
 		inChat := msg.X >= chatLeft && msg.X < leftW &&
 			msg.Y >= chatTop && msg.Y < chatBottom
-		// 输入区:左列 body 下方那块(空白行 + textarea 行),Y ∈ [vpH, m.height) 且 X ∈ [0, leftW)。
-		// X 上界收到 leftW —— 右侧是全高状态栏,点那里不该进输入编辑。
-		inInput := msg.Y >= vpH && msg.Y < m.height && msg.X >= 0 && msg.X < leftW
-
-		if inInput {
+		if m.inInputArea(msg.X, msg.Y) {
 			// 按下进入输入区:清 chat 选区 + 记拖拽锚点,准备"拖拽选择片段"。
 			// 同时把上一次的输入选区清掉:若接着是真拖动,MouseMotion 会重新点亮;
 			// 若只是单击松手,就等价于"点一下取消"(#188)。
@@ -1681,28 +1674,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		// 文本粘贴:超阈值(>800 字符,或行数超 pasteLineCap=min(height-10,2)、常态 >2 行)走占位符,否则让 textarea 正常接。
-		// 占位符方案避免超长文本被 textarea 的 CharLimit(4000)截断、也不撑爆输入区。
-		// 进入 textarea 之前先把 \r\n 归一为 \n:否则 textarea 的 Sanitizer 会把
-		// \r\n 拆成两个 \n(\r 一个、\n 一个),造成行翻倍、历史/输入框错乱(见 normalizeNewlines)。
-		text := msg.Content
-		text = normalizeNewlines(text)
-		numLines := strings.Count(text, "\n")
-		if len(text) > pasteTextThreshold || numLines > m.pasteLineCap() {
-			// 先回收上一轮已无引用的全文,再存新的;避免反复大段粘贴时 map 只增不减。
-			m.prunePastedTexts()
-			if m.pastedTexts == nil {
-				m.pastedTexts = make(map[int]string)
-			}
-			id := m.nextPasteID
-			m.nextPasteID++
-			m.pastedTexts[id] = text
-			m.input.InsertString(formatPastedTextRef(id, numLines))
-			return m, nil
-		}
-		var c tea.Cmd
-		m.input, c = m.input.Update(tea.PasteMsg{Content: text})
-		return m, c
+		return m, m.insertPastedText(msg.Content)
 
 	case tea.KeyPressMsg:
 		// 配置 modal 处于活动状态时,按键全部在这里处理,绕过主界面。两步:选供应商 / 填配置。
@@ -2494,14 +2466,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "f2":
 			// 切换鼠标穿透模式:关掉 MouseMode,让终端原生处理右键粘贴和文字选择。
-			m.mousePassthrough = !m.mousePassthrough
-			hint := "鼠标"
-			if m.mousePassthrough {
-				hint += "穿透已开启(终端原生选择/粘贴)"
-			} else {
-				hint += "捕获已恢复(deepx 选区/复制)"
-			}
-			m.appendChat("System", hint)
+			m.toggleMousePassthrough()
 			return m, nil
 		case "ctrl+v":
 			// 剪贴板有图就落盘并插入到输入框;没图则下落到 textinput 走文本粘贴。
@@ -3956,6 +3921,65 @@ func (m model) compactCmd(manual bool) tea.Cmd {
 		}
 		return compressionResultMsg{summary: summary, cutIdx: cutIdx, compressedTurns: turns, err: err, manual: manual}
 	}
+}
+
+// inInputArea 判断鼠标坐标是否落在输入区:左列 body 下方那块(空白行 + textarea 行),
+// Y ∈ [vpH, m.height) 且 X ∈ [0, leftW)。X 上界收到 leftW —— 右侧是全高状态栏,点那里不该进输入编辑。
+// 左键(进入编辑/拖选)与右键(粘贴)共用同一判断,避免两处各写一份、日后改布局漏改一边。
+func (m model) inInputArea(x, y int) bool {
+	leftW, vpH := m.layout()
+	return y >= vpH && y < m.height && x >= 0 && x < leftW
+}
+
+// insertPastedText 把一段外部文本按统一规则送进输入框。**所有粘贴入口都必须走这里**
+// (终端 tea.PasteMsg、右键粘贴),绕过去会踩两个坑:
+//   - 不归一 CRLF:textarea 的 Sanitizer 会把 \r\n 拆成两个 \n(\r 一个、\n 一个),
+//     行数翻倍、输入框与历史一起错乱(Windows / WSL2 剪贴板里 CRLF 是常态,见 normalizeNewlines);
+//   - 不走占位符:超阈值(>pasteTextThreshold 字符,或行数超 pasteLineCap)的文本直插,
+//     会被 textarea 的 CharLimit(4000)静默截断,还把输入区撑爆。
+//
+// 返回值是要交回 bubbletea 的 Cmd(走占位符时为 nil)。
+func (m *model) insertPastedText(text string) tea.Cmd {
+	text = normalizeNewlines(text)
+	if text == "" {
+		return nil
+	}
+	numLines := strings.Count(text, "\n")
+	if len(text) > pasteTextThreshold || numLines > m.pasteLineCap() {
+		// 先回收上一轮已无引用的全文,再存新的;避免反复大段粘贴时 map 只增不减。
+		m.prunePastedTexts()
+		if m.pastedTexts == nil {
+			m.pastedTexts = make(map[int]string)
+		}
+		id := m.nextPasteID
+		m.nextPasteID++
+		m.pastedTexts[id] = text
+		m.input.InsertString(formatPastedTextRef(id, numLines))
+		return nil
+	}
+	var c tea.Cmd
+	m.input, c = m.input.Update(tea.PasteMsg{Content: text})
+	return c
+}
+
+// toggleMousePassthrough 切换鼠标穿透(F2):关掉鼠标捕获后由终端原生处理选择与右键粘贴。
+// 记忆到 meta(同 Ctrl+B 的状态栏显隐),否则每次启动都要重按一次 —— 需要穿透的用户是一直需要。
+//
+// 切换时必须清掉选区/拖拽态:穿透打开后 deepx 收不到任何鼠标事件,若此刻正拖着选区,
+// MouseReleaseMsg 永远不会到,高亮会一直卡在屏幕上。
+func (m *model) toggleMousePassthrough() {
+	m.mousePassthrough = !m.mousePassthrough
+	metaUpdate(func(mm *meta) { mm.MousePassthrough = m.mousePassthrough })
+	m.selecting = false
+	m.inputSelecting = false
+	m.inputDragging = false
+	m.scrollbarDragging = false
+	if m.mousePassthrough {
+		m.chatContent.Open(kindSystem, T("mouse.passthrough.on"))
+	} else {
+		m.chatContent.Open(kindSystem, T("mouse.passthrough.off"))
+	}
+	m.refreshViewport()
 }
 
 // compactFailNote 生成"自动压缩失败"提示的正文,按处置区分说法。

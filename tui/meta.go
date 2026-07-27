@@ -29,6 +29,10 @@ type meta struct {
 	// ShowThinking 记忆是否把模型思考(reasoning_content)暗显进对话流(/thinking 切换)。默认关。
 	ShowThinking bool `json:"show_thinking,omitempty"`
 
+	// MousePassthrough 记忆鼠标穿透模式(F2 切换):开启后关掉鼠标捕获,由终端原生处理
+	// 文字选择与右键粘贴。需要它的用户(WSL2 / 习惯终端原生选择)是一直需要,故重启保持。
+	MousePassthrough bool `json:"mouse_passthrough,omitempty"`
+
 	// Sandbox 记忆沙箱模式("native"/"docker",/sandbox 切换)。空 = native(默认)。
 	Sandbox string `json:"sandbox,omitempty"`
 	// SandboxDockerImage 记忆 docker 沙箱用的镜像(/sandbox docker <image>)。空 = ubuntu:24.04。

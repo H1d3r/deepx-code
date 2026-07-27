@@ -169,6 +169,18 @@ var translations = map[string]map[Lang]string{
 		LangZH: "显示/隐藏右侧状态栏(也可按 Ctrl+B)",
 		LangEN: "Show/hide the right status panel (or press Ctrl+B)",
 	},
+	"mouse.passthrough.on": {
+		LangZH: "🖱 鼠标穿透已开启:文字选择与右键粘贴交回终端处理(deepx 的选区/复制、滚轮、拖拽暂停)。再按 F2 恢复。",
+		LangEN: "🖱 Mouse passthrough ON: the terminal now handles text selection and right-click paste (deepx selection/copy, wheel and drag are paused). Press F2 to restore.",
+	},
+	"mouse.passthrough.off": {
+		LangZH: "🖱 鼠标捕获已恢复:deepx 接管选区/复制、滚轮与右键粘贴。",
+		LangEN: "🖱 Mouse capture restored: deepx handles selection/copy, wheel and right-click paste.",
+	},
+	"mouse.passthrough.badge": {
+		LangZH: "鼠标穿透(F2 切换)",
+		LangEN: "mouse passthrough (F2)",
+	},
 	"cmd.thinking.desc": {
 		LangZH: "显示/隐藏模型思考过程(reasoning),暗显在对话流",
 		LangEN: "Show/hide the model's thinking (reasoning), dimmed in the chat",
@@ -353,6 +365,8 @@ var translations = map[string]map[Lang]string{
 			"- `ctrl+j` — 换行(多行输入)\n" +
 			"- `Ctrl+B` — 显示/隐藏右侧状态栏\n" +
 			"- `Ctrl+V` — 粘贴(含图片)\n" +
+			"- `F2` — 鼠标穿透:交回终端做文字选择/右键粘贴(WSL2、Windows Terminal 常用),重启保持\n" +
+			"- `鼠标右键` — 在输入框内粘贴剪贴板文本(穿透关闭时由 deepx 处理)\n" +
 			"- `Esc` — 中断当前对话(按两次;防 vim 习惯误触。也可 Ctrl+C 单按即停)\n" +
 			"- `Ctrl+C` — 清空输入框;输入为空时按两次退出程序(1 秒内;弹窗内则关弹窗)",
 		LangEN: "\n**Slash commands**\n\n" +
@@ -388,6 +402,8 @@ var translations = map[string]map[Lang]string{
 			"- `ctrl+j` — Newline (multi-line input)\n" +
 			"- `Ctrl+B` — Show/hide the right status panel\n" +
 			"- `Ctrl+V` — Paste (including images)\n" +
+			"- `F2` — Mouse passthrough: let the terminal handle selection / right-click paste (handy on WSL2, Windows Terminal); remembered across restarts\n" +
+			"- `Right click` — Paste clipboard text into the input (handled by deepx when passthrough is off)\n" +
 			"- `Esc` — Interrupt current turn (press twice; avoids vim-habit misfires. Or Ctrl+C to stop in one press)\n" +
 			"- `Ctrl+C` — Clear the input; when empty, press twice within 1s to quit (closes modal if open)",
 	},
