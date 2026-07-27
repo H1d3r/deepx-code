@@ -563,8 +563,8 @@ type shadowResultMsg struct {
 // 轮末会话压缩的触发阈值走 agent.CompactTriggerTokens(ctxWin) —— 与 agent 包轮内 auto-compact
 // 用同一个动态阈值(按窗口缩放 headroom),单一真相源,避免两处不一致。
 
-// shadowPoints 影子热压的触发档位(上下文用量百分比)。30 起步而非 20:keepTarget 也是 20%,
-// 在 20% 处 history < keepTarget 会被 RunCompression 拒(白跑);30% 起 history 才够压。
+// shadowPoints 影子热压的触发档位(上下文用量百分比)。30 起步:保留目标是窗口 15%,
+// 在更低档位处 history < keepTarget 会被 RunCompression 拒(白跑);30% 起 history 才够压。
 var shadowPoints = []int{30, 45, 60}
 
 func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub *web.Hub, srv *web.Server, webURL string) model {
@@ -1102,7 +1102,7 @@ func (m *model) applyStaleShadow() {
 		return
 	}
 	m.summary = cp
-	m.history = append([]agent.ChatMessage(nil), m.history[cut:]...)
+	m.history = agent.CutHistory(m.history, cut) // 影子切点同样可能落在轮内,按需补回任务原文
 	_ = m.session.SaveSummary(cp)
 	_ = m.session.SaveGob("history.gob", m.history)
 	m.session.ClearShadow()
@@ -2794,11 +2794,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.compactingInTurn = false
-		// 自动压缩失败此前完全静默(agent 只是关掉本轮压缩、退回撞窗口保护),用户只看到
-		// 上下文一路涨上去,不知道中间试过一次(issue #201)。给一行,别让它无声消失。
-		m.chatContent.Open(kindSystem, "**自动压缩失败**:"+msg.Reason+"（本轮改用撞窗口保护）")
+		// 自动压缩失败此前完全静默(agent 只是关掉本轮压缩),用户只看到上下文一路涨上去,
+		// 不知道中间试过一次(issue #201)。给一行,别让它无声消失。
+		note := compactFailNote(msg.Reason, msg.Retrying)
+		m.chatContent.Open(kindSystem, "**自动压缩失败**:"+note)
 		m.refreshViewport()
-		m.broadcast(web.Event{Kind: "notice", Text: "自动压缩失败:" + msg.Reason})
+		m.broadcast(web.Event{Kind: "notice", Text: "自动压缩失败:" + note})
 		return m, agent.ListenToStream(m.streamCh)
 
 	case agent.ContextReclaimedMsg:
@@ -2866,10 +2867,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 压缩痕迹:轮内自动压缩此前只在 Turns>0 时往 chat 打一行、且完全不广播给 web,
 		// 于是自动压缩常常悄无声息 —— 用户不知道上下文被动过,只能靠猜(issue #201)。
 		// 与会话级压缩(compressionResultMsg)对齐:chat 一行 + web notice,恒发。
-		note := "已自动压缩会话历史（摘要已更新）"
-		if msg.Turns > 0 {
-			note = fmt.Sprintf("已自动压缩会话历史（%d 轮 → 摘要）", msg.Turns)
-		}
+		note := compactDoneNote(true, msg.Turns)
 		m.chatContent.Open(kindSystem, "**"+note+"**")
 		m.refreshViewport()
 		m.broadcast(web.Event{Kind: "notice", Text: note})
@@ -2985,7 +2983,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// 影子热压:上下文跨过 shadowPoints(30/45/60%)某档时,后台预算一份 checkpoint+cut 存盘
 		// (不改实时态、不阻塞用户)。仅供 >1h 冷重启用,省冷 prefill 全量历史;新覆盖旧;实时压缩落地会清掉它。
-		// 不用 20% 起步:keepTarget 也是 20%,那点 history < keepTarget 必被 RunCompression 拒(白跑)。
+		// 不用更低档位起步:那点 history < keepTarget(窗口 15%)必被 RunCompression 拒(白跑)。
 		var shadowCmd tea.Cmd
 		if m.session != nil && m.models.Pro.Model != "" && !m.compacting && !m.shadowing && ctxWin > 0 {
 			// 取"已达到的最高未做档位"一次触发(pct 一跳跨过多档时不逐格补,直接打最高那档)。
@@ -3100,8 +3098,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.session != nil {
 					_ = m.session.SaveGob("history.gob", m.history)
 				}
-				note := fmt.Sprintf("轮数不足无法压缩,已改回收 %d 处旧工具输出（约 %s tok）",
-					msg.reclaimedCount, formatTokenCount(msg.reclaimedFreed))
+				// 带上真实原因,别预设成"轮数不足":这个分支对任何压缩失败都会走到,
+				// 而轮数按 user|assistant 计之后"轮数不足"已很少出现,剩下多是"历史不足 N% 窗口"或摘要超时。
+				note := fmt.Sprintf("无法压缩(%s),已改回收 %d 处旧工具输出（约 %s tok）",
+					msg.err.Error(), msg.reclaimedCount, formatTokenCount(msg.reclaimedFreed))
 				m.chatContent.Open(kindSystem, "**"+note+"**")
 				m.refreshViewport()
 				m.broadcast(web.Event{Kind: "notice", Text: note})
@@ -3136,7 +3136,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.summary = msg.summary
 		// 压缩点重建系统提示词(缓存本就会 miss),顺势刷新 AGENTS.md 快照:会话中途写入的偏好在此生效。
 		agent.RefreshPreferences(m.workspace)
-		m.history = append([]agent.ChatMessage(nil), m.history[msg.cutIdx:]...)
+		m.history = agent.CutHistory(m.history, msg.cutIdx) // 保留段不以 user 开头时,补回用户任务原文
 
 		// 锁定态:压缩可能把 /model 锁定提示对压掉,在截断后历史最前重注一对,
 		// 让模型压缩后仍知道锁的是哪个模型(锁本身靠 m.modelPin,不依赖这对消息)。
@@ -3168,9 +3168,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastUsage.PromptCacheHitTokens = 0
 		}
 
-		m.chatContent.Open(kindSystem, fmt.Sprintf("**已压缩会话历史（%d 轮→摘要）**", msg.compressedTurns))
+		note := compactDoneNote(false, msg.compressedTurns)
+		m.chatContent.Open(kindSystem, "**"+note+"**")
 		m.refreshViewport()
-		m.broadcast(web.Event{Kind: "notice", Text: fmt.Sprintf("已压缩会话历史（%d 轮 → 摘要）", msg.compressedTurns)})
+		m.broadcast(web.Event{Kind: "notice", Text: note})
 		// 压缩完成,现在在更小的上下文上发出排队的下一条(StreamDoneMsg 把它推迟到了这里)。
 		if next, qcmd, ok := m.popQueuedInput(); ok {
 			return next, qcmd
@@ -3931,7 +3932,35 @@ func (m model) compactCmd(manual bool) tea.Cmd {
 	}
 }
 
-// startManualCompaction 处理 /compact:手动触发会话压缩,仍按 context_window × 20% 保留尾部。
+// compactFailNote 生成"自动压缩失败"提示的正文,按处置区分说法。
+//
+// 原来两种情况统一写"本轮改用撞窗口保护",既看不懂、也偏乐观 —— 那不是什么主动防护,
+// 而是"不再腾空间了,硬撑到撞满窗口、由 API 400 收场"。这里直说后果:
+// 还会重试的说明会重试,不再重试的说明上下文会一直涨,让用户能自己决定要不要 /compact 或开新会话。
+func compactFailNote(reason string, retrying bool) string {
+	if retrying {
+		return reason + "（稍后自动重试;在那之前上下文会继续增长）"
+	}
+	return reason + "（本轮不再压缩,上下文将持续增长直到撞满窗口）"
+}
+
+// compactDoneNote 生成"压缩完成"提示。auto 区分轮内自动压缩与会话级压缩(/compact、轮末、重启)。
+//
+// turns 是压掉的**真实 user 轮数**。切点按 user|assistant 取(见 agent 包的 isTurnBoundary)后,
+// 压掉的可能整个都在同一个 user 轮内部 —— 长任务会话第二次以后的压缩就必然是这样,
+// turns 恒为 0。这时不能显示"0 轮→摘要",那看着像没压成;直说"摘要已更新"。
+func compactDoneNote(auto bool, turns int) string {
+	head := "已压缩会话历史"
+	if auto {
+		head = "已自动压缩会话历史"
+	}
+	if turns > 0 {
+		return fmt.Sprintf("%s（%d 轮 → 摘要）", head, turns)
+	}
+	return head + "（摘要已更新）"
+}
+
+// startManualCompaction 处理 /compact:手动触发会话压缩,按 agent.CompactKeepTokens 保留尾部。
 // 与自动 80% 触发(StreamDoneMsg 里)走同一套 compactCmd + compressionResultMsg 流程,
 // 区别只在于不看 token 阈值——用户敲了就压。压不动(历史太小)由 RunCompression 返回 err,
 // 经 manual 标记在结果处理处反馈给用户。

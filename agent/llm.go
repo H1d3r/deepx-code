@@ -144,10 +144,15 @@ type CompactedMsg struct {
 type CompactingMsg struct{}
 
 // CompactFailedMsg 轮内自动压缩失败(摘要请求超时/被拒、历史压不动)。
-// 失败后本轮不再尝试压缩,退回「撞窗口优雅报错」保护 —— 这件事此前完全静默,
-// 用户只看到上下文一路涨上去却不知道中间试过一次(issue #201)。
+// 这件事此前完全静默,用户只看到上下文一路涨上去却不知道中间试过一次(issue #201)。
+//
+// Retrying 区分两种处置,UI 据此给不同的提示 —— 二者对用户的意味完全不同:
+//   - true:瞬时失败(超时/网络/请求被拒),冷却 compactRetryCooldown 圈后还会再试;
+//   - false:结构性失败,本轮永久关闭压缩,此后只剩 reclaim 与工具输出截断兜底,
+//     上下文会一路涨到撞满窗口、由 API 400 收场(即代码里说的「撞窗口优雅报错」)。
 type CompactFailedMsg struct {
-	Reason string
+	Reason   string
+	Retrying bool
 }
 
 // ContextReclaimedMsg 工具输出回收(reclaim)落地后发给 UI。reclaim 是长任务(user 轮≤2、压缩
@@ -708,17 +713,18 @@ func StartStream(
 				ch <- CompactingMsg{} // 先亮状态行:下面这行最长会卡 10 分钟,期间不吐任何 token
 				sum, cutIdx, turns, cerr := RunCompression(convo[0].Content, MarshalToolSpecs(toolSpecs), hist, currentEntry, ctxWin)
 				if cerr != nil {
-					// 按失败类型分流:轮数不足是本轮结构性不可恢复(user 轮数恒定,重试注定再失败)→ 永久关,
+					// 按失败类型分流:轮数不足是本轮结构性不可恢复(轮数恒定,重试注定再失败)→ 永久关,
 					// 不刷屏;瞬时失败(超时/网络)→ 冷却 compactRetryCooldown 圈后重试(见状态变量注释)。
-					if errors.Is(cerr, ErrCompactTooFewTurns) {
-						inLoopCompactOff = true
-					} else {
+					retrying := !errors.Is(cerr, ErrCompactTooFewTurns)
+					if retrying {
 						compactCooldown = compactRetryCooldown
+					} else {
+						inLoopCompactOff = true
 					}
-					ch <- CompactFailedMsg{Reason: cerr.Error()}
+					ch <- CompactFailedMsg{Reason: cerr.Error(), Retrying: retrying}
 				} else {
 					summary = sum
-					kept := append([]ChatMessage(nil), hist[cutIdx:]...)
+					kept := CutHistory(hist, cutIdx) // 保留段不以 user 开头时,补回用户任务原文
 					convo = append([]ChatMessage{{Role: "system", Content: BuildSystemPrompt(workspace, skillCatalog, summary)}}, kept...)
 					lastPromptTokens = 0 // 压完归零,等下一轮真实 usage 再判
 					// 压缩后 prompt 的本地估算:一份两用 —— ① 防死循环判断(下面);② 随 CompactedMsg

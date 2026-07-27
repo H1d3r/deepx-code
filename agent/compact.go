@@ -18,15 +18,66 @@ import (
 // 本文件封装与 TUI 无关的压缩纯逻辑:token 估算 + RunCompression。
 // bubbletea 胶水(触发时机、tea.Cmd 包装、消息处理、读 model/session)仍在 tui 包,调用这里的导出函数。
 
-// ErrCompactTooFewTurns:压缩因「user 轮数不足」被拒。这是**结构性不可恢复**失败 —— 轮内 for 循环
-// 是单个 user turn,期间 user 轮数恒定,冷却后重试也永远失败,且这个检查在发 LLM 请求前就本地秒拒。
-// agent 据此区别对待:轮数不足永久关本轮压缩(而非冷却重试),避免每圈闪「压缩中…/失败」刷屏
-// (issue #201)。只有瞬时失败(超时/网络)才值得冷却重试。
-var ErrCompactTooFewTurns = errors.New("user 轮数不足,无需压缩")
+// ErrCompactTooFewTurns:压缩因「对话轮数不足」被拒(轮数按 isTurnBoundary 计,见下)。
+// 这个检查在发 LLM 请求前就本地秒拒,agent 据此区别对待:轮数不足永久关本轮压缩(而非冷却重试),
+// 避免每圈闪「压缩中…/失败」刷屏(issue #201)。只有瞬时失败(超时/网络)才值得冷却重试。
+var ErrCompactTooFewTurns = errors.New("对话轮数不足,无需压缩")
 
-// keepRecentTurns 是压缩时至少保留的最近 user 轮数下限(与 20% 预算取较大者)。
-// 2 轮能覆盖"最近指代",同时大幅减少过度保留。可按需调整。
+// keepRecentTurns 是压缩时至少保留的最近对话轮数下限(与 compactKeepPct 预算取较大者)。
+// 2 轮能覆盖"最近指代",同时不过度保留。
 const keepRecentTurns = 2
+
+// compactKeepPct 是压缩后保留的尾部上下文占上下文窗口的百分比(切点由它反推)。
+// 15%(原 20%):留得更少 = 压完离触发线更远、少压几次,长任务会话尤其受益。
+const compactKeepPct = 15
+
+// CompactKeepTokens 返回压缩后应保留的尾部上下文 token 数(= 窗口 × compactKeepPct%)。
+// 导出供 tui 使用:"值不值得压"的判断必须与这里的保留口径一致,别再各处各写一份百分比。
+func CompactKeepTokens(ctxWin int) int { return ctxWin * compactKeepPct / 100 }
+
+// CutHistory 按切点截断历史,返回要保留的尾部(新切片,不共享底层数组、不改入参)。
+//
+// 切点按 user|assistant 取(见 isTurnBoundary),长任务轮里往往落在 assistant 上,于是保留段以
+// assistant 打头、整段可能一条 user 消息都没有。这时把**被压掉那部分里最近一条 user 消息**复制
+// 一份放到最前面,一举两得:
+//   - 模型能看到用户任务的原文,而不是只剩摘要里的转述;
+//   - 开头恒为 system → user → assistant。vLLM 按模型自带 chat template 渲染,Mistral / Llama-2 系
+//     模板写着 raise_exception("Conversation roles must alternate ..."),system 后直接跟 assistant 会被拒。
+//
+// 从**被压掉的部分**取,所以它在时间线上必早于保留段的全部内容,插到最前面顺序正确,
+// 也不会与保留段里已有的 user 消息重复。复制时丢掉图片:图会被重新渲染成 base64、很占 token,
+// 而摘要里已有相关描述。保留段本就以 user 开头时原样返回,不做任何事。
+//
+// 所有应用切点的地方都该走这里,别自己 history[cutIdx:] —— 否则各处行为不一致。
+func CutHistory(history []ChatMessage, cutIdx int) []ChatMessage {
+	cutIdx = min(max(cutIdx, 0), len(history))
+	kept := history[cutIdx:]
+	out := make([]ChatMessage, 0, len(kept)+1)
+	if len(kept) > 0 && kept[0].Role != "user" {
+		for i := cutIdx - 1; i >= 0; i-- {
+			// 取最近一条**有正文**的 user 消息:纯图片消息剥掉图后正文为空,
+			// 发出去会是一条没有 content 字段的 user 消息,部分后端直接拒。
+			if history[i].Role != "user" || strings.TrimSpace(history[i].Content) == "" {
+				continue
+			}
+			task := history[i]
+			task.ImagePaths = nil // 图不复制(见上)
+			task.ContentParts = nil
+			out = append(out, task)
+			break
+		}
+	}
+	return append(out, kept...)
+}
+
+// isTurnBoundary 判断这条消息能否当作"一轮对话"的边界,也即能否作为压缩切点。
+//
+// user 和 assistant 都算,tool 不算。两个原因:
+//   - "一个 user 消息 + 几十轮工具调用"的长任务轮里一条 user 都没有(issue #201 的典型形态),
+//     只认 user 就找不到切点,压缩要么退到最前面(等于不压)、要么把整个长轮全保住;
+//   - tool 消息必须紧跟发起调用的 assistant,切在它上面会留下孤儿 tool → API 400
+//     (见 sanitizeToolPairs);而切在 assistant 上,它的 tool 结果自然跟着一起保留,配对不坏。
+func isTurnBoundary(m ChatMessage) bool { return m.Role == "user" || m.Role == "assistant" }
 
 // compactionTimeout 是摘要 LLM 调用的硬超时。没有它,卡住的请求会让压缩锁永远占住、把所有压缩堵死。
 // 给得宽松(容纳大摘要生成 + 本地慢模型,如 4090D 上跑 qwen 摘要大历史,见 issue #201),
@@ -191,7 +242,8 @@ func EstimatePromptTokens(workspace, skillCatalog, summary string, history []Cha
 
 // === 压缩执行 ===
 
-// RunCompression 执行一次会话压缩:按 context_window × 20% 保留尾部上下文。
+// RunCompression 执行一次会话压缩:保留 max(context_window × compactKeepPct%, 最近 keepRecentTurns 轮)
+// 的尾部上下文,切点落在 user / assistant 边界(见 isTurnBoundary),因此也能切进长任务轮内部。
 // 通常在 goroutine 中调用。history 仅含会话消息(不含 system / 旧摘要消息)。
 //
 // 缓存友好:传入 lastSystemPrompt(上次实际发送的 system 文本)时,摘要请求构造成
@@ -201,35 +253,39 @@ func EstimatePromptTokens(workspace, skillCatalog, summary string, history []Cha
 func RunCompression(lastSystemPrompt, lastToolSpecsJSON string, history []ChatMessage, entry ModelEntry, ctxWin int) (
 	summary string, cutIdx int, compressedTurns int, err error) {
 
-	totalUsers := 0
+	// 轮数按 isTurnBoundary(user 或 assistant)计:一个 user 消息 + 几十轮工具调用同样是几十轮对话,
+	// 只数 user 会把这种长任务会话判成"轮数不足"而永远压不动(issue #201)。
+	// 总轮数不多于要保留的轮数 → 全都要留,没有可压前缀。
+	turns := 0
 	for _, msg := range history {
-		if msg.Role == "user" {
-			totalUsers++
+		if isTurnBoundary(msg) {
+			turns++
 		}
 	}
-	if totalUsers <= 2 {
+	if turns <= keepRecentTurns {
 		return "", 0, 0, ErrCompactTooFewTurns
 	}
 
-	// 保留量 = max(20% 预算, 最近 keepRecentTurns 轮),取保留更多者(切点更靠前 = 下标更小)。
-	// 关键:budgetStart 初值 = 0 = "默认保留全部"。从尾部累加 token 攒够 20% 窗口,才把切点后移
-	// (留得更少)。整段历史都不到 20% → budgetStart 停在 0 → keepStart=0 → 守卫拒绝,不压。
-	keepTarget := ctxWin * 20 / 100
+	// 保留量 = max(compactKeepPct 预算, 最近 keepRecentTurns 轮),取保留更多者(切点更靠前 = 下标更小)。
+	// 两个循环都只在 isTurnBoundary 处取切点 —— 切在 tool 上会留下孤儿 tool、被 API 拒。
+	// 关键:budgetStart 初值 = 0 = "默认保留全部"。从尾部累加 token 攒够预算,才把切点后移
+	// (留得更少)。整段历史都不够预算 → budgetStart 停在 0 → keepStart=0 → 守卫拒绝,不压。
+	keepTarget := CompactKeepTokens(ctxWin)
 
-	budgetStart := 0 // 默认保留全部;攒够 20% 才后移切点
+	budgetStart := 0 // 默认保留全部;攒够预算才后移切点
 	cc := 0
 	for i := len(history) - 1; i >= 0; i-- {
 		// 用 MsgTokens(tiktoken 精确分词)按 token 累加全字段,含 ReasoningContent + ToolCalls 参数。
 		cc += MsgTokens(history[i])
-		if history[i].Role == "user" && cc >= keepTarget {
+		if isTurnBoundary(history[i]) && cc >= keepTarget {
 			budgetStart = i
 			break
 		}
 	}
-	turnStart := len(history) // 最近 keepRecentTurns 个 user 轮;不足则保持 len(不参与取 min)
+	turnStart := len(history) // 最近 keepRecentTurns 轮;不足则保持 len(不参与取 min)
 	uc := 0
 	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Role == "user" {
+		if isTurnBoundary(history[i]) {
 			uc++
 			if uc >= keepRecentTurns {
 				turnStart = i
@@ -242,8 +298,8 @@ func RunCompression(lastSystemPrompt, lastToolSpecsJSON string, history []ChatMe
 		keepStart = turnStart
 	}
 	if keepStart <= 0 {
-		// 整段都要留:历史不足 20% 窗口,或 20% 边界就在最前一条 —— 没有可压缩前缀。
-		return "", 0, 0, fmt.Errorf("历史不足 20%% 窗口,无需压缩")
+		// 整段都要留:历史不足保留预算,或预算边界就在最前一条 —— 没有可压缩前缀。
+		return "", 0, 0, fmt.Errorf("历史不足 %d%% 窗口,无需压缩", compactKeepPct)
 	}
 	cutIdx = keepStart
 
