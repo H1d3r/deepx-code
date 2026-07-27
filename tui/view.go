@@ -26,10 +26,9 @@ func (m model) wrapView(content string) tea.View {
 	v := tea.NewView(content)
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
-	// 文本输入类弹窗(填 API key / MCP / skill / web 配置)打开时关掉鼠标捕获,
-	// 让终端恢复原生右键粘贴(WSL2 / Windows Terminal 等)。否则鼠标模式开着时,
-	// 右键被当成鼠标事件吞掉,用户只能 Ctrl+V(见 issue #40)。这些弹窗内不需要拖拽/滚动。
-	if m.showSetup || m.showMcpAdd || m.showSkillAdd || m.showWebConfig {
+	// 鼠标穿透模式:关掉鼠标捕获,让终端原生处理右键粘贴与文字选择。
+	// 用户可按 F2 在 TUI 内切换,无需退出 deepx。
+	if m.mousePassthrough || m.showSetup || m.showMcpAdd || m.showSkillAdd || m.showWebConfig {
 		v.MouseMode = tea.MouseModeNone
 	}
 	// 换行键统一为 ctrl+j(LF,终端原生、不依赖 Kitty 协议、三平台一致,见 issue #124),
@@ -531,9 +530,15 @@ func (m model) statusFooterLine(_ int) string {
 			if m.turnToolCalls > 0 {
 				s += dim(" · " + strconv.Itoa(m.turnToolCalls) + " " + T("done.tools"))
 			}
+			if m.mousePassthrough {
+				s += dim(" · 🖱穿透")
+			}
 			return s
 		}
-		// 还没跑过任何一轮:留空。活动行的价值在"运行↔完成"的对比,启动时常挂个"就绪"只是噪音。
+		// 还没跑过任何一轮:检查鼠标穿透指示。
+		if m.mousePassthrough {
+			return dim("🖱 鼠标穿透已开启(F2切换)")
+		}
 		return ""
 	}
 	head := statusIcon(m.status)
@@ -548,6 +553,9 @@ func (m model) statusFooterLine(_ int) string {
 	// API 退避重试中:状态行实时显示「重试 N/10」,醒目色(对标 Claude Code 的 attempt 计数)。
 	if m.retryNotice != "" {
 		left += dim(" · ") + lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true).Render("⟳ "+m.retryNotice)
+	}
+	if m.mousePassthrough {
+		left += dim(" · 🖱穿透")
 	}
 	// 不再右贴 "Esc 中断" —— 输入框 placeholder(misc.input_placeholder)已含,避免重复。
 	return left
