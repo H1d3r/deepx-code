@@ -130,8 +130,8 @@ var translations = map[string]map[Lang]string{
 		LangEN: "Switch language / 切换语言",
 	},
 	"cmd.compact.desc": {
-		LangZH: "手动压缩会话历史(保留 20%)",
-		LangEN: "Manually compact session history (keep 20%)",
+		LangZH: "手动压缩会话历史(保留 15%)",
+		LangEN: "Manually compact session history (keep 15%)",
 	},
 	"cmd.undo.desc": {
 		LangZH: "撤销上一轮对话(原输入回填输入框)",
@@ -335,7 +335,7 @@ var translations = map[string]map[Lang]string{
 			"- `/workflow` — 运行已保存的 workflow:`/workflow <名字> [键=值 …]`(运行前确认)\n" +
 			"- `/lang` — 切换语言 (中/英)\n" +
 			"- `/reasoning` — 设置 thinking / reasoning_effort(per-role,空值不发)\n" +
-			"- `/compact` — 手动压缩会话历史(保留尾部 20%)\n" +
+			"- `/compact` — 手动压缩会话历史(保留尾部 15%)\n" +
 			"- `/new` — 开启全新对话(当前对话已保存,可在 /sessions 找回)\n" +
 			"- `/sessions` — 历史对话列表(↑/↓ 选,Enter 切换)\n" +
 			"- `/status` — 显示/隐藏右侧状态栏(也可按 Ctrl+B)\n" +
@@ -370,7 +370,7 @@ var translations = map[string]map[Lang]string{
 			"- `/workflow` — Run a saved workflow: `/workflow <name> [key=value …]` (confirms before running)\n" +
 			"- `/lang` — Switch language (zh/en)\n" +
 			"- `/reasoning` — Set thinking / reasoning_effort (per-role, empty = don't send)\n" +
-			"- `/compact` — Manually compact session history (keep last 20%)\n" +
+			"- `/compact` — Manually compact session history (keep last 15%)\n" +
 			"- `/new` — Start a brand-new conversation (current one is saved, see /sessions)\n" +
 			"- `/sessions` — Conversation history (↑/↓ select, Enter switch)\n" +
 			"- `/status` — Show/hide the right status panel (or press Ctrl+B)\n" +

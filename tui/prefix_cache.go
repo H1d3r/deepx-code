@@ -21,10 +21,10 @@ import (
 const cacheWarmWindow = 1 * time.Hour
 
 // restartCompactKeepFactor:启动检测到前缀变化时,仅当"历史 token"(estimateHistoryTokens)≥
-// 保留目标(ctxWin×20%)的这个倍数才压缩。口径与"保留"统一 —— 都只算历史、不含 system/tools/summary
-// 底座(底座压不掉,不该计入"值不值得压"的判断)。
+// 保留目标(agent.CompactKeepTokens)的这个倍数才压缩。口径与"保留"统一 —— 都只算历史、
+// 不含 system/tools/summary 底座(底座压不掉,不该计入"值不值得压"的判断)。
 //
-// 取 2:历史要 ≥ 2×(20%窗口) = 40%窗口才压,确保压完至少去掉一半,而非"刚过线压一点点 ——
+// 取 2:历史要 ≥ 2× 保留目标才压,确保压完至少去掉一半,而非"刚过线压一点点 ——
 // 省下的空间还抵不过一次摘要调用 + 信息有损"。低于此量,冷首请求本来就便宜,直接扛着、
 // 让缓存在新前缀上自然回暖即可。
 const restartCompactKeepFactor = 2
@@ -121,7 +121,8 @@ func (m *model) detectRestartCompaction() bool {
 		ctxWin = 65536
 	}
 	// 只看历史 token(与保留口径一致),且要 ≥ 保留目标的 restartCompactKeepFactor 倍才值得压。
-	keepTarget := ctxWin * 20 / 100
+	// 走 agent.CompactKeepTokens,与压缩实际保留的口径共用一份定义,避免两边百分比各自漂移。
+	keepTarget := agent.CompactKeepTokens(ctxWin)
 	if m.estimateHistoryTokens() < keepTarget*restartCompactKeepFactor {
 		return false // 历史不够大,压完省不下多少,冷首请求本来就便宜,不值得压
 	}
