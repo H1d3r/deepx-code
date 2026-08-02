@@ -441,6 +441,10 @@ var translations = map[string]map[Lang]string{
 		LangZH: "已切换为自动选择模型（按任务关键词路由 flash/pro）。",
 		LangEN: "Switched to automatic model selection (routed flash/pro by task).",
 	},
+	"model.pin.global": {
+		LangZH: "已记为全局默认：之后新开的会话起手用 %s（已有会话仍按各自锁定的模型）。",
+		LangEN: "Saved as the global default — new conversations start with %s (existing ones keep their own).",
+	},
 	"model.modal.title": {
 		LangZH: "选择模型",
 		LangEN: "Select model",
