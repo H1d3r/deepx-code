@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"deepx/tools"
 )
 
 // meta 是 ~/.deepx/meta.json 的全局元数据,集中保存语言选择 + 升级检查缓存。
@@ -22,6 +24,12 @@ type meta struct {
 	// 未命中才发一次最小探测(agent.ProbeVision),结果写回这里,下次启动直接命中。
 	// 能力按维度拆开(本期只做 vision,预留 video / audio),不用笼统的 multimodal。
 	ModelCaps map[string]modelCaps `json:"model_caps,omitempty"`
+
+	// ModelPin 记忆最近一次 /model 选择("auto"/"flash"/"pro"),给「从没锁过模型」的
+	// 会话当起手默认。issue #43 要的是"切完下次启动还生效",光存会话级 state.json 做不到:
+	// /new 开的新会话没存过 pin,起手又回 auto,pro 的 token 照样被自动路由跑掉。
+	// 两层叠加,会话自己的选择优先 —— 切回旧会话仍是它当时锁的那个,不受这里影响。
+	ModelPin string `json:"model_pin,omitempty"`
 
 	// HideStatus 记忆右侧状态栏的显隐选择(Ctrl+B / /status 切换),重启保持。
 	HideStatus bool `json:"hide_status,omitempty"`
@@ -56,6 +64,19 @@ func webHost() string {
 }
 
 func webPort() int { return metaGet().WebPort }
+
+// modelPinDefault 返回全局记忆的 /model 选择,给「从没锁过模型」的会话当起手默认。
+// 值域与 /model 一致(auto/flash/pro);空或非法一律回落 "auto",即原有的关键词路由。
+// 容忍大小写与空白 —— 这个字段虽然由 /model 自动写,但用户手改 meta.json 也是合法用法。
+func modelPinDefault() string {
+	switch strings.ToLower(strings.TrimSpace(metaGet().ModelPin)) {
+	case tools.RoleFlash:
+		return tools.RoleFlash
+	case tools.RolePro:
+		return tools.RolePro
+	}
+	return "auto"
+}
 
 // modelCaps 是单个模型探测出的能力位,按维度独立存。
 type modelCaps struct {

@@ -740,6 +740,10 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 	if sess != nil {
 		m.workingMode = agent.NormalizeWorkingMode(sess.LoadWorkingMode())
 		m.restoreModelPin(sess.LoadModelPin())
+	} else {
+		// 无会话(创建失败)也要过一遍:全局默认同样该生效,且「模型已配置」的校验只有
+		// restoreModelPin 里那一份,别在上面的结构体字面量里再抄一遍。
+		m.restoreModelPin("")
 	}
 
 	// 回填上轮 token 用量,Usage section 启动后立刻显示真实数字而非 "—"。
@@ -3874,6 +3878,12 @@ func (m *model) applyModelPin(arg string) {
 	if m.session != nil {
 		m.session.SaveModelPin(m.modelPin)
 	}
+	// 再记进 meta.json 当全局默认,供之后新开的会话起手用(restoreModelPin 的空 pin 回落)。
+	// 只在真的变了时写 + 提示一次:同一个选择反复敲不该每次都刷一行系统消息。
+	if modelPinDefault() != m.modelPin {
+		metaUpdate(func(mm *meta) { mm.ModelPin = m.modelPin })
+		m.appendChat("System", fmt.Sprintf(T("model.pin.global"), m.modelPin))
+	}
 	m.broadcast(web.Event{Kind: "routing", Text: m.modelPin})
 }
 
@@ -3881,6 +3891,11 @@ func (m *model) applyModelPin(arg string) {
 // flash/pro 且对应模型已配置 → 锁定并即时切右栏显示;否则回退 auto(右栏起手 flash,
 // flash 未配置则 pro)。供 initialModel 启动恢复与 loadCurrentConversation 切会话恢复共用。
 func (m *model) restoreModelPin(pin string) {
+	// 会话从没锁过(空)→ 回落全局记忆的上次 /model 选择(meta.ModelPin);
+	// 存过 auto/flash/pro 则按原样恢复 —— 会话自己的选择优先于全局默认。
+	if pin == "" {
+		pin = modelPinDefault()
+	}
 	switch {
 	case pin == tools.RoleFlash && m.models.Flash.Model != "":
 		m.modelPin = tools.RoleFlash
