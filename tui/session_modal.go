@@ -86,6 +86,9 @@ func (m *model) loadCurrentConversation() {
 	m.plan = nil
 	m.planKind = ""
 	m.pendingUserText = ""
+	// 主题是会话级状态(同 workingMode / modelPin),跟着会话走,不跨会话串。
+	// 不用管 topicF:切会话在流式中被拒,而每轮开头都会把它清零。
+	m.topic = ""
 	// 切会话:影子档位归零;代数 +1 让另一会话在飞的影子结果 gen 失配被丢弃(不串台存错会话)。
 	m.shadowDonePct = 0
 	m.compactGen++
@@ -107,6 +110,7 @@ func (m *model) loadCurrentConversation() {
 				gobHistory = gobHistory[1:]
 			}
 			m.history = gobHistory
+			m.topic = lastTopicOf(gobHistory) // 右栏主题跟着切过去的会话恢复
 			rebuildChatFromHistory(m.chatContent, gobHistory)
 		}
 	}
