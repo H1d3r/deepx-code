@@ -30,12 +30,19 @@ const (
 	topicStateBody
 )
 
+// topicFilter 的字段必须全是**值拷贝安全**的类型 —— model.Update 是值接收者,
+// bubbletea 每次事件都会整份拷贝 model(topicF 是它的值字段)。这里原本用
+// strings.Builder 存 raw/body,而 Builder 首次写入后禁止被值拷贝(copyCheck),
+// 标签一旦被切在两个流式 chunk 之间(必然发生),下一次 feed 的写入就 panic:
+// "strings: illegal use of non-zero Builder copied by value"(issue #226)。
+// 改用 string:零值可用、拷贝安全、拷贝之间互不干扰,而累积的内容只是一个标签
+// (几十字节),拼接开销可以忽略。
 type topicFilter struct {
 	state   int
-	pending string          // 未决尾巴:可能是开标签的部分前缀,或标签前的空白
-	raw     strings.Builder // 开标签以来吃掉的原文,标签没闭合时用它还原,不吞正文
-	body    strings.Builder // 标签体
-	attr    string          // 开标签里的属性串
+	pending string // 未决尾巴:可能是开标签的部分前缀,或标签前的空白
+	raw     string // 开标签以来吃掉的原文,标签没闭合时用它还原,不吞正文
+	body    string // 标签体
+	attr    string // 开标签里的属性串
 
 	topic    string // 最近一次捕获到的主题
 	shift    bool   // 该次捕获是否标了 shift="yes"
@@ -63,33 +70,31 @@ func (f *topicFilter) feed(chunk string) string {
 			kept := strings.TrimRight(lead, " \t\r\n")
 			out.WriteString(f.emit(kept))
 			s = s[i+len(topicOpen):]
-			f.raw.Reset()
-			f.raw.WriteString(lead[len(kept):] + topicOpen)
+			f.raw = lead[len(kept):] + topicOpen
 			f.state = topicStateOpen
 
 		case topicStateOpen:
 			j := strings.IndexByte(s, '>')
 			if j < 0 {
 				f.attr += s
-				f.raw.WriteString(s)
+				f.raw += s
 				return out.String()
 			}
 			f.attr += s[:j]
-			f.raw.WriteString(s[:j+1])
+			f.raw += s[:j+1]
 			s = s[j+1:]
 			f.state = topicStateBody
 
 		case topicStateBody:
 			// 闭合标签同样可能被切开,所以在累积的标签体里找,而不是只在本段里找。
-			f.body.WriteString(s)
-			f.raw.WriteString(s)
-			before, after, found := strings.Cut(f.body.String(), topicClose)
+			f.body += s
+			f.raw += s
+			before, after, found := strings.Cut(f.body, topicClose)
 			if !found {
 				return out.String()
 			}
 			s = after
-			f.body.Reset()
-			f.body.WriteString(before)
+			f.body = before
 			f.commit()
 			f.state = topicStateText
 		}
@@ -103,9 +108,9 @@ func (f *topicFilter) flush() string {
 	out := f.emit(f.pending)
 	f.pending = ""
 	if f.state != topicStateText {
-		out += f.raw.String()
-		f.raw.Reset()
-		f.body.Reset()
+		out += f.raw
+		f.raw = ""
+		f.body = ""
 		f.attr = ""
 		f.state = topicStateText
 	}
@@ -126,12 +131,12 @@ func (f *topicFilter) emit(s string) string {
 }
 
 func (f *topicFilter) commit() {
-	if t := strings.TrimSpace(f.body.String()); t != "" {
+	if t := strings.TrimSpace(f.body); t != "" {
 		f.topic = t
 		f.shift = topicAttrYes(f.attr)
 	}
-	f.body.Reset()
-	f.raw.Reset()
+	f.body = ""
+	f.raw = ""
 	f.attr = ""
 	f.trimLead = true
 }
