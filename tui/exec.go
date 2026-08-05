@@ -33,6 +33,9 @@ func RunExec(cfg agent.ModelConfig, prompt string) error {
 	)
 	tools.SetSkillLoader(loader)
 	tools.SetCodeGraphRoot(wd)
+	// 单次 Write 的 content 上限同样按窗口注入(见 agent.WriteContentLimitFor),
+	// 否则 exec 下会一直吃 tools 的保守兜底值,与 TUI 行为不一致。
+	tools.SetWriteContentLimit(agent.WriteContentLimitFor(cfg))
 	skillCatalog := buildSkillCatalog(loader)
 
 	// Ctrl+C → 取消 ctx;StartStream 在轮次间 / HTTP 层检测到取消会平滑收尾并 close channel。

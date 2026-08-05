@@ -144,10 +144,10 @@ func TestRepairThenSanitize_Compose(t *testing.T) {
 	}
 }
 
-// TestRewriteToolCallArgsForHistory_Repairs 入历史路径:空/坏 arguments 被修复,
-// Write 大 content 的省略逻辑照常工作(修复在前、省略在后)。
+// TestRewriteToolCallArgsForHistory_Repairs 入历史路径:空/坏 arguments 被修复;
+// 合法的大 content 原样保留 —— 只修 JSON 合法性,不改参数语义(见 history_args_test.go)。
 func TestRewriteToolCallArgsForHistory_Repairs(t *testing.T) {
-	big := strings.Repeat("x", maxInlineWriteContentBytes+1)
+	big := strings.Repeat("x", 64*1024+1) // 远超任何旧阈值
 	bigArgs, _ := json.Marshal(map[string]string{"path": "a.txt", "content": big})
 	in := []ToolCall{
 		{ID: "c1", Type: "function", Function: ToolCallFunc{Name: "Bash", Arguments: ``}},
@@ -162,8 +162,8 @@ func TestRewriteToolCallArgsForHistory_Repairs(t *testing.T) {
 	if got := out[1].Function.Arguments; got != `{"path":"a.go"}` {
 		t.Fatalf("截断 arguments 应被补全, got %q", got)
 	}
-	if !json.Valid([]byte(out[2].Function.Arguments)) || strings.Contains(out[2].Function.Arguments, big) {
-		t.Fatalf("Write 大 content 应被省略且保持合法 JSON: %q", out[2].Function.Arguments)
+	if out[2].Function.Arguments != string(bigArgs) {
+		t.Fatalf("合法的大 content 应原样保留(len want=%d got=%d)", len(bigArgs), len(out[2].Function.Arguments))
 	}
 	// 执行用的原始 toolCalls 不受影响
 	if in[0].Function.Arguments != `` || in[1].Function.Arguments != `{"path":"a.go` {
