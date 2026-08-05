@@ -35,6 +35,52 @@ const compactKeepPct = 15
 // 导出供 tui 使用:"值不值得压"的判断必须与这里的保留口径一致,别再各处各写一份百分比。
 func CompactKeepTokens(ctxWin int) int { return ctxWin * compactKeepPct / 100 }
 
+// 单次 Write content 上限的推导参数(见 WriteContentLimitBytes)。
+const (
+	// writeLimitBytesPerTok:token → 字节的保守折算比。实测 64KB 中文 ≈ 15.1K token
+	// (≈4.3 字节/token),纯 ASCII 代码 ≈ 8 字节/token。取中文这一头,宁可估紧不估松。
+	writeLimitBytesPerTok = 4
+	// writeLimitFloor:下限。极小窗口也得能写点有用的东西,否则模型连一个正常源文件都落不了地。
+	writeLimitFloor = 8 * 1024
+	// writeLimitCap:上限。超大窗口下也不放行病态写入 —— 它仍要在每轮请求里重传,
+	// 直到被压缩带走,且这期间无法回收。
+	writeLimitCap = 64 * 1024
+	// writeLimitDefault:窗口未知时的保守默认。
+	writeLimitDefault = 16 * 1024
+)
+
+// WriteContentLimitBytes 返回单次 Write 的 content 字节上限,随上下文窗口自适应。
+// 由 tui 启动 / 换模型时算出来注入 tools(见 tools.SetWriteContentLimit)。
+//
+// 为什么必须有这个上限:工具参数一旦进了 assistant.tool_calls,就只能等压缩把它切走 ——
+// 而压缩强制保留最近 keepRecentTurns(2)轮,reclaim 又只处理 role=tool 的输出、够不着
+// tool_call 的参数。也就是说大写入刚发生的那两轮里,它既压不掉也回收不了。小窗口模型单条
+// 大写入就能把上下文顶爆,压缩根本等不到触发。所以只能在源头挡,不能指望事后收拾。
+//
+// 取值:单次写入不超过「压缩保留预算」的一半 —— 保证它落进尾部保护区时,压缩仍压得动。
+func WriteContentLimitBytes(ctxWin int) int {
+	if ctxWin <= 0 {
+		return writeLimitDefault
+	}
+	n := CompactKeepTokens(ctxWin) / 2 * writeLimitBytesPerTok
+	return min(max(n, writeLimitFloor), writeLimitCap)
+}
+
+// WriteContentLimitFor 按一份模型配置算出该注入的 Write 上限,取 flash / pro 中**较小**的窗口。
+// 上限是安全阀,得按最脆弱的那个模型定:同一会话里 flash 和 pro 会来回切(关键词路由 +
+// SwitchModel 升级),而写入发生在哪一轮事先不知道。两个窗口可以配得不一样(model.yaml 里
+// 每个条目各有 context_window),按大的算会让跑在小窗口模型上的那轮顶爆。
+// 都没配(都是 0)时回落保守默认。
+func WriteContentLimitFor(models ModelConfig) int {
+	ctxWin := 0
+	for _, w := range []int{models.Flash.ContextWindow, models.Pro.ContextWindow} {
+		if w > 0 && (ctxWin == 0 || w < ctxWin) {
+			ctxWin = w
+		}
+	}
+	return WriteContentLimitBytes(ctxWin)
+}
+
 // CutHistory 按切点截断历史,返回要保留的尾部(新切片,不共享底层数组、不改入参)。
 //
 // 切点按 user|assistant 取(见 isTurnBoundary),长任务轮里往往落在 assistant 上,于是保留段以
@@ -293,10 +339,7 @@ func RunCompression(lastSystemPrompt, lastToolSpecsJSON string, history []ChatMe
 			}
 		}
 	}
-	keepStart := budgetStart // 取保留更多者 = 更靠前的切点
-	if turnStart < keepStart {
-		keepStart = turnStart
-	}
+	keepStart := min(budgetStart, turnStart) // 取保留更多者 = 更靠前的切点
 	if keepStart <= 0 {
 		// 整段都要留:历史不足保留预算,或预算边界就在最前一条 —— 没有可压缩前缀。
 		return "", 0, 0, fmt.Errorf("历史不足 %d%% 窗口,无需压缩", compactKeepPct)
@@ -318,10 +361,7 @@ func RunCompression(lastSystemPrompt, lastToolSpecsJSON string, history []ChatMe
 	}
 	compressedTurns = compressedUserCount
 
-	summaryMax := ctxWin * 3 / 100
-	if summaryMax < 256 {
-		summaryMax = 256 // 最小 256 tok,避免太小失去摘要意义
-	}
+	summaryMax := max(ctxWin*3/100, 256) // 下限 256 tok,避免太小失去摘要意义
 
 	// 硬超时:卡住的摘要请求不会永久占住压缩锁(否则压缩全堵死)。
 	ctx, cancel := context.WithTimeout(context.Background(), compactionTimeout)

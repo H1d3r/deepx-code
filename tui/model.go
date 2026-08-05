@@ -42,11 +42,7 @@ const pasteLineThresholdCap = 2
 
 // pasteLineCap 与 free-code 一致:maxLines = min(rows-10, 2),常态终端下即 >2 行触发占位符。
 func (m model) pasteLineCap() int {
-	c := m.height - 10
-	if pasteLineThresholdCap < c {
-		c = pasteLineThresholdCap
-	}
-	return c
+	return min(m.height-10, pasteLineThresholdCap)
 }
 
 // formatPastedTextRef 生成长文本粘贴占位符,与 free-code 一致:[Pasted text #N +X lines]。
@@ -86,10 +82,15 @@ func (m model) prunePastedTexts() {
 	if len(m.pastedTexts) == 0 {
 		return
 	}
-	refs := m.input.Value() + "\x00" + m.pendingInputOriginal
+	var refsBuf strings.Builder
+	refsBuf.WriteString(m.input.Value())
+	refsBuf.WriteString("\x00")
+	refsBuf.WriteString(m.pendingInputOriginal)
 	for _, q := range m.queuedInput {
-		refs += "\x00" + q
+		refsBuf.WriteString("\x00")
+		refsBuf.WriteString(q)
 	}
+	refs := refsBuf.String()
 	re := regexp.MustCompile(`\[Pasted text #(\d+)(?: \+\d+ lines)?\]`)
 	keep := make(map[int]bool, len(m.pastedTexts))
 	for _, sm := range re.FindAllStringSubmatch(refs, -1) {
@@ -677,6 +678,11 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 
 	// 代码图谱:绑定到当前 workspace 根,懒构建(首次 CodeGraph 调用时才遍历解析)。
 	tools.SetCodeGraphRoot(wd)
+
+	// 单次 Write 的 content 上限:按上下文窗口自适应算出来注入工具层(见 agent.WriteContentLimitFor)。
+	// 大写入的参数进了 assistant.tool_calls 就压不掉也回收不了(compact 保护最近 2 轮、reclaim 只管
+	// role=tool 的输出),小窗口模型单条就能顶爆,所以只能在源头挡。换模型(窗口变了)时要重设。
+	tools.SetWriteContentLimit(agent.WriteContentLimitFor(models))
 
 	// 沙箱:绑定 workspace(docker 挂载用)+ 恢复上次模式/镜像。docker 模式下首条命令惰性起容器;
 	// 若彼时 docker 不可用,EnsureDockerContainer 会给清晰错误,用户可 /sandbox native 切回。
@@ -1575,20 +1581,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chatViewport.ScrollDown(1)
 				scrolled = true
 			}
-			cx := msg.X
-			if cx < chatLeft {
-				cx = chatLeft
-			}
-			if cx >= chatRight {
-				cx = chatRight - 1
-			}
-			cy := msg.Y
-			if cy < chatTop {
-				cy = chatTop
-			}
-			if cy >= chatBottom {
-				cy = chatBottom - 1
-			}
+			cx := min(max(msg.X, chatLeft), chatRight-1)
+			cy := min(max(msg.Y, chatTop), chatBottom-1)
 			col := cx - chatLeft
 			line := m.chatViewport.YOffset() + (cy - chatTop)
 			if scrolled || m.selEnd.col != col || m.selEnd.line != line {

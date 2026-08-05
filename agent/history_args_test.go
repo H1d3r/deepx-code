@@ -7,6 +7,14 @@ import (
 	"unicode/utf8"
 )
 
+// 本文件钉的是 rewriteToolCallArgsForHistory 的核心不变量:
+// **只修 arguments 的 JSON 合法性,不改任何工具的参数语义。**
+//
+// 这里曾经把 Write 的大 content 折叠成 "[已写入 …]" 的引用描述。移除的原因见
+// rewriteToolCallArgsForHistory 的注释:被系统改写过的参数形态会出现在历史里,
+// 模型会把它当成该工具的标准写法模仿。防上下文膨胀改由工具层上限
+// (tools.SetWriteContentLimit,随窗口自适应)+ 压缩兜底承担。
+
 // mkTC 构造一个工具调用。
 func mkTC(name, argsJSON string) ToolCall {
 	return ToolCall{ID: "id1", Type: "function", Function: ToolCallFunc{Name: name, Arguments: argsJSON}}
@@ -22,34 +30,36 @@ func argsMap(t *testing.T, argsJSON string) map[string]any {
 	return m
 }
 
-func TestElideWriteContent_LargeReplacedWithReference(t *testing.T) {
-	// 全中文大内容:老实现按字节切会切出半个 rune,这里应整体换成引用、不含乱码。
-	content := strings.Repeat("这是一段中文内容。", 200) // 远超 512 字节
-	in := mkTC("Write", `{"path":"a/b/中文.go","content":`+jsonStr(content)+`}`)
+// TestWriteArgs_LargeContentKeptVerbatim 是这次改动的核心断言:
+// 大 content 原样入历史,不折叠、不改写、不截断。
+func TestWriteArgs_LargeContentKeptVerbatim(t *testing.T) {
+	content := strings.Repeat("这是一段中文内容。", 200) // 远超旧阈值 512 字节
+	raw := `{"path":"a/b/中文.go","content":` + jsonStr(content) + `}`
 
-	out := rewriteToolCallArgsForHistory([]ToolCall{in})
-	got := out[0].Function.Arguments
+	got := rewriteToolCallArgsForHistory([]ToolCall{mkTC("Write", raw)})[0].Function.Arguments
 
+	if got != raw {
+		t.Fatalf("大 content 的 Write 应原样保留\n want=%s\n got =%s", raw, got)
+	}
 	if !utf8.ValidString(got) {
-		t.Fatalf("结果含非法 UTF-8(切出了半个字符): %q", got)
+		t.Fatalf("结果含非法 UTF-8: %q", got)
 	}
 	m := argsMap(t, got)
-	gotContent, _ := m["content"].(string)
-	if strings.Contains(gotContent, "这是一段中文内容") == true && len(gotContent) > 200 {
-		t.Fatalf("大 content 应被换成引用而非保留原文, got=%q", gotContent)
-	}
-	if !strings.Contains(gotContent, "已写入") || !strings.Contains(gotContent, "Read") {
-		t.Fatalf("引用描述应含'已写入'和'Read'提示, got=%q", gotContent)
-	}
-	if !strings.Contains(gotContent, "a/b/中文.go") {
-		t.Fatalf("引用描述应含文件路径, got=%q", gotContent)
+	if c, _ := m["content"].(string); c != content {
+		t.Fatalf("content 应逐字节一致(len want=%d got=%d)", len(content), len(c))
 	}
 	if p, _ := m["path"].(string); p != "a/b/中文.go" {
 		t.Fatalf("path 应保持不变, got=%q", p)
 	}
+	// 折叠时代的痕迹一个都不该出现
+	for _, marker := range []string{"已写入", "content_omitted", "需要内容用 Read 查看"} {
+		if strings.Contains(got, marker) {
+			t.Fatalf("历史里不应出现系统改写的痕迹 %q", marker)
+		}
+	}
 }
 
-func TestElideWriteContent_SmallKeptInline(t *testing.T) {
+func TestWriteArgs_SmallContentKeptVerbatim(t *testing.T) {
 	in := mkTC("Write", `{"path":"x.txt","content":"小内容"}`)
 	out := rewriteToolCallArgsForHistory([]ToolCall{in})
 	if out[0].Function.Arguments != in.Function.Arguments {
@@ -57,15 +67,13 @@ func TestElideWriteContent_SmallKeptInline(t *testing.T) {
 	}
 }
 
-func TestElideWriteContent_NoHTMLEscape(t *testing.T) {
-	// path 含 < > &,大 content 触发重编码;不应被转成 < 等。
-	content := strings.Repeat("x", 600)
-	in := mkTC("Write", `{"path":"a<b>&c.go","content":`+jsonStr(content)+`}`)
-	got := rewriteToolCallArgsForHistory([]ToolCall{in})[0].Function.Arguments
-	// 若 < > & 被 HTML 转义,原始 JSON 里 path 会变成 a<b>&c.go,
-	// 就不再包含字面子串 "a<b>&c.go"。含字面子串即证明未转义。
+// TestWriteArgs_NoHTMLEscape 没有重新编码就不会有 HTML 转义问题。
+// 旧实现要靠 json.Encoder + SetEscapeHTML(false) 兜住,现在从源头消失了。
+func TestWriteArgs_NoHTMLEscape(t *testing.T) {
+	raw := `{"path":"a<b>&c.go","content":` + jsonStr(strings.Repeat("x", 600)) + `}`
+	got := rewriteToolCallArgsForHistory([]ToolCall{mkTC("Write", raw)})[0].Function.Arguments
 	if !strings.Contains(got, "a<b>&c.go") {
-		t.Fatalf("< > & 不应被 HTML 转义(path 应保持字面量), got=%s", got)
+		t.Fatalf("< > & 应保持字面量,不被 HTML 转义, got=%s", got)
 	}
 	if p, _ := argsMap(t, got)["path"].(string); p != "a<b>&c.go" {
 		t.Fatalf("path 应原样保留 < > &, got=%q", p)
@@ -73,12 +81,11 @@ func TestElideWriteContent_NoHTMLEscape(t *testing.T) {
 }
 
 func TestUpdate_NeverTruncated(t *testing.T) {
-	// Update 即使 old_string/new_string 巨大也一律原样保留。
+	// Update 的 old_string/new_string 承载 diff 语义,Read 补不回来,一律原样。
 	old := strings.Repeat("旧", 500)
 	nw := strings.Repeat("新", 500)
 	raw := `{"path":"f.go","old_string":` + jsonStr(old) + `,"new_string":` + jsonStr(nw) + `}`
-	in := mkTC("Update", raw)
-	out := rewriteToolCallArgsForHistory([]ToolCall{in})
+	out := rewriteToolCallArgsForHistory([]ToolCall{mkTC("Update", raw)})
 	if out[0].Function.Arguments != raw {
 		t.Fatalf("Update 应原样保留,不裁剪\n want=%s\n got =%s", raw, out[0].Function.Arguments)
 	}
@@ -92,18 +99,19 @@ func TestOtherTools_Untouched(t *testing.T) {
 	}
 }
 
-func TestInvalidJSON_ReturnedAsIs(t *testing.T) {
-	// 超过阈值但不是合法 JSON:原样返回,不 panic。
+// TestInvalidJSON_StillRepaired 非法 JSON 仍要被修成合法的 —— 这是 issue #201 的修复,
+// 与折叠是两件事,删折叠不能把它一起删掉。
+func TestInvalidJSON_StillRepaired(t *testing.T) {
 	broken := "{not json" + strings.Repeat("x", 600)
-	if got := elideWriteContent(broken); got != broken {
-		t.Fatalf("非法 JSON 应原样返回")
+	got := rewriteToolCallArgsForHistory([]ToolCall{mkTC("Write", broken)})[0].Function.Arguments
+	if !json.Valid([]byte(got)) {
+		t.Fatalf("坏 arguments 必须被修成合法 JSON(否则严格后端会对后续所有请求 400), got=%q", got)
 	}
 }
 
 func TestRewrite_DoesNotMutateOriginal(t *testing.T) {
 	// 执行仍用原始 toolCalls:确认原始未被改动。
-	content := strings.Repeat("y", 600)
-	raw := `{"path":"z.go","content":` + jsonStr(content) + `}`
+	raw := `{"path":"z.go","content":` + jsonStr(strings.Repeat("y", 600)) + `}`
 	orig := []ToolCall{mkTC("Write", raw)}
 	_ = rewriteToolCallArgsForHistory(orig)
 	if orig[0].Function.Arguments != raw {
@@ -119,14 +127,11 @@ func TestRewrite_MixedBatch(t *testing.T) {
 		mkTC("Read", `{"path":"r.go"}`),
 	}
 	out := rewriteToolCallArgsForHistory(tcs)
-	if c, _ := argsMap(t, out[0].Function.Arguments)["content"].(string); !strings.Contains(c, "已写入") {
-		t.Fatalf("批次中的大 Write 应被换引用, got=%q", c)
-	}
-	if out[1].Function.Arguments != tcs[1].Function.Arguments {
-		t.Fatalf("批次中的 Update 应原样")
-	}
-	if out[2].Function.Arguments != tcs[2].Function.Arguments {
-		t.Fatalf("批次中的 Read 应原样")
+	for i := range tcs {
+		if out[i].Function.Arguments != tcs[i].Function.Arguments {
+			t.Fatalf("批次中第 %d 条(%s)应原样保留\n want=%s\n got =%s",
+				i, tcs[i].Function.Name, tcs[i].Function.Arguments, out[i].Function.Arguments)
+		}
 	}
 }
 

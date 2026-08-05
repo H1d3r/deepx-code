@@ -3,6 +3,7 @@ package tui
 import (
 	"deepx/agent"
 	"deepx/config"
+	"deepx/tools"
 	"fmt"
 	"strconv"
 	"strings"
@@ -323,6 +324,8 @@ func (m *model) submitSetup() tea.Cmd {
 	}
 	// 模型换了:视觉能力可能变,重置 —— 先用新模型的缓存值垫初值,下面返回探测命令立刻重探。
 	m.visionByModel = loadVisionCaps(m.models)
+	// 窗口也可能变了:单次 Write 上限随窗口自适应,重算注入(见 agent.WriteContentLimitFor)。
+	tools.SetWriteContentLimit(agent.WriteContentLimitFor(m.models))
 	// 重置 modal 状态
 	m.showSetup = false
 	m.setupRequired = false
@@ -423,6 +426,8 @@ func (m *model) applyProvider(name string) tea.Cmd {
 	}
 	// 换了供应商 → 视觉能力可能变,先用缓存垫初值,再返回探测命令重探。
 	m.visionByModel = loadVisionCaps(m.models)
+	// 窗口也可能变了:单次 Write 上限随窗口自适应,重算注入(见 agent.WriteContentLimitFor)。
+	tools.SetWriteContentLimit(agent.WriteContentLimitFor(m.models))
 	m.appendChat("System", fmt.Sprintf(T("provider.switched"), name, m.models.Flash.Model, m.models.Pro.Model))
 	m.refreshViewport()
 	// /provider 切供应商后同步 Web 面板模型名(Hub 快照的 Models 只在启动时设过一次,

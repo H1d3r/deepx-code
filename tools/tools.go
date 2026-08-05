@@ -1,6 +1,10 @@
 package tools
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strconv"
+	"strings"
+)
 
 // 模型角色常量:标识本轮用 flash 还是 pro。仅用于入口路由、SwitchModel、以及 UI 的活动模型
 // 指示;不再用于工具可见性过滤(所有角色的工具表一致,保前缀缓存)。
@@ -90,13 +94,23 @@ func (f *OpenAIFunctionSpec) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// ToOpenAISpec 转换成 OpenAI tools 协议。
+// descWriteLimitToken 是工具描述里的占位符,渲染成 spec 时替换为当前生效的 Write 上限。
+// 为什么要动态:上限随模型窗口自适应(见 SetWriteContentLimit),写死数字会骗到模型 ——
+// 而模型只有知道确切字节数才能**事先**把大文件拆好,否则撞上限被拒 = 白生成一遍。
+// 对前缀缓存无影响:该值只在启动 / 换模型时变,而换模型本来就会换掉整个缓存前缀。
+const descWriteLimitToken = "{{WRITE_LIMIT}}"
+
+// ToOpenAISpec 转换成 OpenAI tools 协议。描述里的占位符在这里渲染成当前实际值。
 func (t Tool) ToOpenAISpec() OpenAIToolSpec {
+	desc := t.Description
+	if strings.Contains(desc, descWriteLimitToken) {
+		desc = strings.ReplaceAll(desc, descWriteLimitToken, strconv.Itoa(WriteContentLimit()))
+	}
 	return OpenAIToolSpec{
 		Type: "function",
 		Function: OpenAIFunctionSpec{
 			Name:        t.Name,
-			Description: t.Description,
+			Description: desc,
 			Parameters:  t.Parameters,
 		},
 	}
@@ -187,9 +201,10 @@ var Tools = []Tool{
 	{
 		Name: "Write",
 		Description: "写入（覆盖）文本文件。父目录会自动创建。\n\n" +
-			"⚠️ 超大文件分块写:content 会整体计入本次输出,一次写太多可能撞上单次输出上限被截断、" +
-			"导致本次调用失败——且对话越长、可用输出预算越小,越容易触发。稳妥做法:先用 Write 写入" +
-			"开头一部分,再用 Update 逐段追加余下内容,把每次写入拆小。",
+			"⚠️ 单次 content 上限 " + descWriteLimitToken + " 字节,超过直接拒绝(该上限随模型上下文窗口自适应)。" +
+			"预计会超就**别整份写**——先用 Write 写开头一部分,再用 Update 逐段追加余下内容。\n" +
+			"另外 content 会整体计入本次输出,一次写太多还可能撞上单次输出上限被截断;" +
+			"对话越长、可用输出预算越小,越容易触发,所以拆小总是更稳。",
 		Parameters: ToolParam{
 			Type: "object",
 			Properties: map[string]PropDef{

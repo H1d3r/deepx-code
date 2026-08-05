@@ -835,9 +835,8 @@ func StartStream(
 				return
 			}
 
-			// 把本轮 assistant 回复写入历史(含 reasoning_content,thinking 模型下轮需要)
-			// Write 的大 content 换成文件引用描述(文件已实际写入,历史留引用即可、需要时 Read),
-			// Update 原样保留(其 diff 语义 Read 补不回来)。详见 rewriteToolCallArgsForHistory。
+			// 把本轮 assistant 回复写入历史(含 reasoning_content,thinking 模型下轮需要)。
+			// 工具参数原样入历史,只修 JSON 不改语义 —— 详见 rewriteToolCallArgsForHistory。
 			convo = append(convo, ChatMessage{
 				Role:             "assistant",
 				Content:          assistantContent,
@@ -971,7 +970,7 @@ func StartStream(
 						final := runDAG(ctx, nodes, exec, ch)
 						// 3. 拼汇总 ToolResult 给 pro,让它写最终给用户的总结
 						var summary strings.Builder
-						summary.WriteString(fmt.Sprintf("已执行完毕,共 %d 个节点。\n", len(final)))
+						fmt.Fprintf(&summary, "已执行完毕,共 %d 个节点。\n", len(final))
 						successCount := 0
 						for _, n := range final {
 							icon := "?"
@@ -984,9 +983,9 @@ func StartStream(
 							case PlanStatusBlocked:
 								icon = "⏸"
 							}
-							summary.WriteString(fmt.Sprintf("  %s [%s] %s — %s\n", icon, n.ID, n.Title, n.Summary))
+							fmt.Fprintf(&summary, "  %s [%s] %s — %s\n", icon, n.ID, n.Title, n.Summary)
 						}
-						summary.WriteString(fmt.Sprintf("\n%d/%d 成功。请基于以上结果给用户写一段简洁的最终总结。", successCount, len(final)))
+						fmt.Fprintf(&summary, "\n%d/%d 成功。请基于以上结果给用户写一段简洁的最终总结。", successCount, len(final))
 						result = tools.ToolResult{
 							Output:  summary.String(),
 							Success: successCount > 0,
@@ -1777,59 +1776,28 @@ func runExecutorGuarded(t *tools.Tool, args map[string]any) tools.ToolResult {
 	}
 }
 
-// maxInlineWriteContentBytes 是 Write 的 content 存入历史时保留原文的字节上限。
-// 超过则把 content 整体替换为文件引用描述(文件已实际写入,历史留引用即可、需要时 Read 取回),
-// 而不是截断出一段片段 —— 既避免完整文件内容撑爆上下文,也免去"按字节切多字节字符切出半个字"的麻烦。
-// 未超则原样保留:小内容占不了多少上下文,留着还能让模型看到自己刚写了什么。
-const maxInlineWriteContentBytes = 512
-
-// rewriteToolCallArgsForHistory 生成"存入历史用"的 toolCalls 副本:
-// 把 Write 的大 content 替换成文件引用描述,避免完整文件内容撑爆上下文。
-// Update 一律原样保留 —— 其 old_string/new_string 承载"把什么改成了什么"的 diff 语义,
-// 这信息不在文件里、Read 也补不回来,故不裁剪。
-// 只影响存入历史的版本,执行仍用原始 toolCalls,二者互不影响(ToolCall/ToolCallFunc 皆值类型)。
+// rewriteToolCallArgsForHistory 生成"存入历史用"的 toolCalls 副本:只做 arguments 的
+// JSON 修复(空→{}、截断补全、垃圾兜底包裹,见 args_repair.go)—— 历史里的坏 arguments 会让
+// vLLM 等严格后端对后续所有请求 400,会话不可恢复(issue #201)。执行仍用原始 toolCalls,
+// 二者互不影响(ToolCall/ToolCallFunc 皆值类型)。
+//
+// **不改写任何工具的参数语义**。这里曾经把 Write 的大 content 折叠成 "[已写入 …]" 的引用描述,
+// 现已移除:任何"系统改写后出现在历史里的参数形态"都会被模型当成该工具的标准写法学走 ——
+// 缺 content 的伪调用、把折叠标记当 content 写回、反复 Read 验证刚写的文件,根子都在这里。
+// 防上下文膨胀改由两处承担,各自在正确的位置:
+//   - 源头:tools.SetWriteContentLimit 在工具层按窗口自适应地拒绝超大写入
+//     (推导见 WriteContentLimitBytes;拒绝是普通 tool error,模型会正确处理);
+//   - 兜底:压缩。MsgTokens 已计入 ToolCalls.Arguments,大 content 会被正确计量、按时触发压缩。
+//
+// 同样的取舍也适用于 Update:其 old_string/new_string 承载"把什么改成了什么"的 diff 语义,
+// 这信息不在文件里、Read 也补不回来,更不能裁剪。
 func rewriteToolCallArgsForHistory(tcs []ToolCall) []ToolCall {
 	out := make([]ToolCall, len(tcs))
 	for i, tc := range tcs {
 		out[i] = tc
-		// 入历史前把 arguments 修成合法 JSON(空→{}、截断补全、垃圾兜底包裹,见 args_repair.go):
-		// 历史里的坏 arguments 会让 vLLM 等严格后端对后续所有请求 400,会话不可恢复(issue #201)。
-		// 执行仍用原始 toolCalls,不受影响。
 		out[i].Function.Arguments = repairArgsJSON(out[i].Function.Arguments)
-		if tc.Function.Name == "Write" {
-			out[i].Function.Arguments = elideWriteContent(out[i].Function.Arguments)
-		}
 	}
 	return out
-}
-
-// elideWriteContent 若 Write 的 content 超过 maxInlineWriteContentBytes,
-// 把它替换为 "[已写入 <path>,N 字节/M 行;需要内容用 Read 查看]" 的引用描述并重新序列化;
-// content 够短、解析失败、或字段缺失都原样返回。
-// 重新编码用 json.Encoder + SetEscapeHTML(false),避免 path 里的 < > & 被转义成 < 等。
-func elideWriteContent(argsJSON string) string {
-	if len(argsJSON) <= maxInlineWriteContentBytes {
-		return argsJSON // 整个 arguments 都没超,content 必然没超,免解析
-	}
-	var args map[string]any
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return argsJSON
-	}
-	content, ok := args["content"].(string)
-	if !ok || len(content) <= maxInlineWriteContentBytes {
-		return argsJSON
-	}
-	path, _ := args["path"].(string)
-	lines := strings.Count(content, "\n") + 1
-	args["content"] = fmt.Sprintf("[已写入 %s,%d 字节/%d 行;需要内容用 Read 查看]", path, len(content), lines)
-
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(args); err != nil {
-		return argsJSON
-	}
-	return strings.TrimRight(buf.String(), "\n") // Encode 会补一个换行,去掉
 }
 
 // --- 工具输出回收(reclaim,issue #201)---
