@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	gts "github.com/odvcencio/gotreesitter"
@@ -22,9 +23,44 @@ func HeritageLangs() []string {
 	return out
 }
 
-// parseTimeout 是单文件 tree-sitter 解析的硬上限。GLR 对个别病态输入会爆炸且软超时不可靠,
-// 用子 goroutine + select 到点直接放弃该文件,保证索引不被一个文件拖死。
-const parseTimeout = 1 * time.Second
+// parseTimeout 返回单文件 tree-sitter 解析的硬上限,按源码体量放宽。
+// GLR 对个别病态输入会爆炸且软超时不可靠,用子 goroutine + select 到点直接放弃该文件,
+// 保证索引不被一个文件拖死。
+//
+// 为什么不能一律 1 秒(issue #233):几百 KiB 的真实源文件在慢机器上就要几百毫秒,
+// 1 秒预算一半就没了,越大越容易撞线 —— 而撞线的后果是**静默**只索引到文件开头几个符号
+// (见下方 Parse 里的 ParseStoppedEarly 判断)。上限有 maxFileSize(1 MiB)兜着,
+// 所以最坏也就 baseParseTimeout + 10×perMiB,且跑在后台索引里,不挡前台。
+func parseTimeout(srcLen int) time.Duration {
+	if d := parseBudgetOverride.Load(); d > 0 {
+		return time.Duration(d)
+	}
+	return baseParseTimeout + time.Duration(srcLen/(100<<10))*perChunkParseTimeout
+}
+
+// parseBudgetOverride 仅供测试改写解析预算 —— 截断路径没法用正常输入稳定触发
+// (取决于机器快慢),只能把预算压到必然超时。生产代码永不写它,0 = 未设置。
+var parseBudgetOverride atomic.Int64
+
+const (
+	baseParseTimeout     = 1 * time.Second // 起步预算(小文件绰绰有余)
+	perChunkParseTimeout = 1 * time.Second // 每 100 KiB 追加
+
+	// parseHardStopSlack 是外层 select 相对内层解析预算的宽限。
+	// 两者必须错开:内层到点会**干净地**停下并在树上留下 StopReason(据此才知道结果残缺、
+	// 才能计数排查);外层只是"解析彻底卡死"的兜底。取同一个值会让两者赛跑,外层常常先赢,
+	// 于是明明是可识别的截断却被当成不明超时处理,线索就丢了。
+	parseHardStopSlack = 2 * time.Second
+)
+
+// truncatedParses 累计"因解析被掐断而整份丢弃"的文件数。
+// 这条计数存在的理由就是 issue #233 的排查过程:跳过原本是完全静默的,用户只看到
+// "CodeGraph 时灵时不灵",查不到任何线索,报告人是靠读源码 + 二分截断才定位到。
+// 有个数就能一眼看出"不是查不到,是这些文件压根没进索引"。
+var truncatedParses int64
+
+// TruncatedParses 返回本进程内因解析截断被跳过的文件数(0 = 索引完整)。
+func TruncatedParses() int64 { return atomic.LoadInt64(&truncatedParses) }
 
 func init() { Register(newTreeSitterParser()) }
 
@@ -137,9 +173,10 @@ func (p *tsParser) Parse(relPath string, src []byte) (ParseResult, error) {
 		return ParseResult{}, nil
 	}
 
-	// 解析硬超时:子 goroutine + select,前台绝不被单文件阻塞超过 parseTimeout。
+	// 解析硬超时:子 goroutine + select,前台绝不被单文件阻塞超过 budget。
+	budget := parseTimeout(len(src))
 	parser := gts.NewParser(lang)
-	parser.SetTimeoutMicros(uint64(parseTimeout.Microseconds()))
+	parser.SetTimeoutMicros(uint64(budget.Microseconds()))
 	type parseOut struct {
 		tree *gts.Tree
 		err  error
@@ -152,9 +189,21 @@ func (p *tsParser) Parse(relPath string, src []byte) (ParseResult, error) {
 		if r.err != nil || r.tree == nil {
 			return ParseResult{}, nil
 		}
+		// 解析被预算掐断时,库返回的是**残缺但看起来正常**的树:err 是 nil、
+		// RootNode().HasError() 也是 false —— 不问 StopReason 就会把半棵树当成完整结果收下,
+		// 只索引到文件开头几个符号,而且毫无迹象(issue #233:8739 行的 Rust 文件只出 1 个符号)。
+		// 截断原因不止超时:节点数 / 内存预算 / 迭代 / 栈深 / 词法提前 EOF / 取消,都会走到这里。
+		// 判据照抄库自己的口径(parser_retry.go:63),比 ParseStoppedEarly() 多兜两个标志位。
+		if rt := r.tree.ParseRuntime(); rt.StopReason != gts.ParseStopAccepted || rt.Truncated || rt.TokenSourceEOFEarly {
+			atomic.AddInt64(&truncatedParses, 1)
+			return ParseResult{}, nil // 残缺树宁可不要:半份符号比没有更糟(模型会以为函数不存在),
+			// 交给 Grep 兜底,与硬超时同一处置。
+		}
 		tree = r.tree
-	case <-time.After(parseTimeout):
-		return ParseResult{}, nil // 硬超时 → 跳过该文件
+	case <-time.After(budget + parseHardStopSlack):
+		// 兜底:内层预算到点本该自己停下(走上面的 StopReason 分支),走到这里说明解析真卡死了。
+		atomic.AddInt64(&truncatedParses, 1)
+		return ParseResult{}, nil
 	}
 
 	tags := tg.TagTree(tree)

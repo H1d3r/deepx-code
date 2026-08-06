@@ -11,7 +11,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/fastschema/qjs v0.0.6
 	github.com/getcharzp/onnxruntime_purego v1.24.0
-	github.com/odvcencio/gotreesitter v0.19.1
+	github.com/odvcencio/gotreesitter v0.48.1
 	github.com/tiktoken-go/tokenizer v0.7.0
 	golang.org/x/sys v0.45.0
 	golang.org/x/tools v0.45.0
